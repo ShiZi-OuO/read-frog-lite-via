@@ -64,8 +64,6 @@ Read Frog Lite for Via 以单文件用户脚本形式运行在 Via 中。点击�
 
 感谢 [Read Frog](https://github.com/mengxi-ream/read-frog) 原作者与贡献者提供的开源项目、设计思路和参考实现。
 
-本项目是针对 Via 浏览器的独立修改作品，并非 Read Frog 官方发行版。
-
 ## License
 
 本项目采用 [GPL-3.0-only](LICENSE) 许可证发布。
