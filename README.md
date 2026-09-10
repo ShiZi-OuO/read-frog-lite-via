@@ -22,14 +22,6 @@ Read Frog Lite for Via 以单文件用户脚本形式运行在 Via 中。点击�
 - 正文智能识别，尽量避开导航、工具栏、表单、代码与隐藏内容
 - 可拖动、贴边半隐藏的青蛙悬浮球，以及 Material 风格设置面板
 
-## Screenshots
-
-| 主界面 | 设置界面 | 翻译效果 |
-| --- | --- | --- |
-| ![主界面](docs/images/main.png) | ![设置界面](docs/images/settings.png) | ![翻译效果](docs/images/translate.png) |
-
-将对应截图放入 `docs/images/` 后，GitHub 会自动显示它们。
-
 ## Installation
 
 1. 下载或复制 [`src/read-frog-lite-via.user.js`](src/read-frog-lite-via.user.js)。
