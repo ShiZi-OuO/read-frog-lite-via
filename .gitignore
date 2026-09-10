@@ -1,0 +1,12 @@
+# 发布包由 GitHub Releases 附件提供，不纳入源码提交
+*.zip
+
+# 本地 Playwright 视觉验收截图
+qa-*.png
+
+# 本地解压的上游源码，仅用于开发参考
+read-frog-main/
+
+# 操作系统生成文件
+.DS_Store
+Thumbs.db
