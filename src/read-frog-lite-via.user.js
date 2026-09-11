@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Read Frog Lite for Via
 // @namespace    https://github.com/ShiZi-OuO/read-frog-lite-via
-// @version      1.0.0
+// @version      1.0.1
 // @description  为 Via 优化的移动端网页翻译：渐进双语翻译、划词翻译、朗读与多服务支持
 // @author       Read Frog contributors; Modified for Via Browser by shizi
 // @license      GPL-3.0-only
@@ -38,13 +38,14 @@
   // 配置与持久化状态
   // ---------------------------------------------------------------------------
 
-  var VERSION = "1.0.0";
+  var VERSION = "1.0.1";
   var CONFIG_KEY = "read_frog_via_config_v2";
   var OLD_CONFIG_KEY = "read_frog_via_config_v1";
   var MAX_PARAGRAPHS = 500;
   var MAX_TEXT_LENGTH = 5000;
   var REQUEST_TIMEOUT = 60000;
   var TRANSLATION_CLASS = "rf-via-translation";
+  var SOURCE_SEGMENT_CLASS = "rf-via-source-segment";
 
   var DEFAULT_CONFIG = {
     schemaVersion: 2,
@@ -254,7 +255,7 @@
       /* 悬浮球及其任务结束状态徽标。 */
       #frog-dock{position:fixed;z-index:2147483646;width:70px;height:70px;overflow:visible;pointer-events:none}#frog-dock.side-right{right:0;left:auto}#frog-dock.side-left{left:0;right:auto}
       #frog{position:absolute;top:10px;width:50px;height:50px;border:1px solid rgba(255,255,255,.32);border-radius:50%;background:linear-gradient(150deg,rgba(255,255,255,.16),transparent 44%),linear-gradient(145deg,var(--leaf2),var(--primary));color:var(--on-primary);box-shadow:0 8px 24px rgba(28,68,44,.26);font-size:25px;line-height:50px;padding:0;touch-action:none;user-select:none;-webkit-tap-highlight-color:transparent;transition:transform .34s cubic-bezier(.2,.8,.2,1),opacity .26s ease-out,box-shadow .22s ease;will-change:transform,opacity}#frog-dock.side-right #frog{right:10px;left:auto}#frog-dock.side-left #frog{left:10px;right:auto}
-      #frog-icon{display:flex;width:100%;height:100%;align-items:center;justify-content:center;transform:translateX(0) scale(1);transform-origin:center;transition:transform .32s cubic-bezier(.22,1,.36,1);pointer-events:none}.frog-mark{display:block;width:37px;height:37px}.frog-face{fill:var(--primary-container)}.frog-eye{fill:var(--on-primary-container)}.frog-smile{fill:none;stroke:#d87969;stroke-width:3;stroke-linecap:round}#frog-loader{position:absolute;right:-3px;bottom:-3px;width:18px;height:18px;border:2px solid rgba(255,255,255,.92);border-radius:50%;background:#2ca76a;box-shadow:0 2px 7px rgba(14,57,35,.28);opacity:0;transform:scale(.72);transition:opacity .16s ease,transform .2s cubic-bezier(.22,1,.36,1);pointer-events:none}#frog-loader:after{content:"";position:absolute;inset:2px;border:2px solid rgba(255,255,255,.38);border-top-color:#fff;border-radius:50%}#frog.busy #frog-loader{opacity:1;transform:scale(1)}#frog.busy #frog-loader:after{animation:rf-spin .72s linear infinite}#frog-status{position:absolute;inset:-3px;display:flex;align-items:center;justify-content:center;border-radius:50%;color:#fff;opacity:0;transform:translate(0,0) scale(1);box-shadow:0 7px 22px rgba(20,80,49,.28);transition:opacity .12s ease,transform .48s cubic-bezier(.22,1,.36,1),box-shadow .35s ease;pointer-events:none}#frog-status .status-icon{width:30px;height:30px;stroke-width:2.5}#frog-status.show{opacity:1;transform:translate(0,0) scale(1);transition:transform .48s cubic-bezier(.22,1,.36,1),box-shadow .35s ease}#frog-status.ok{background:linear-gradient(145deg,#49c986,#197b4b)}#frog-status.warn{background:linear-gradient(145deg,#efad55,#c66a26)}#frog-status.show.minimized{transform:translate(17px,17px) scale(.34);box-shadow:0 5px 16px rgba(20,70,43,.32)}#frog:active{box-shadow:0 3px 12px rgba(20,80,49,.3)}#frog.tucked{opacity:.46;box-shadow:none}#frog-dock.side-right #frog.tucked{transform:translateX(35px)}#frog-dock.side-left #frog.tucked{transform:translateX(-35px)}#frog-dock.side-right #frog.tucked #frog-icon{transform:translateX(-12px) scale(.72)}#frog-dock.side-left #frog.tucked #frog-icon{transform:translateX(12px) scale(.72)}#frog-dock.side-right #frog.tucked #frog-status.show.minimized{transform:translate(-15px,17px) scale(.34)}@keyframes rf-spin{to{transform:rotate(360deg)}}
+      #frog-icon{display:flex;width:100%;height:100%;align-items:center;justify-content:center;transform:translateX(0) scale(1);transform-origin:center;transition:transform .32s cubic-bezier(.22,1,.36,1);pointer-events:none}.frog-mark{display:block;width:37px;height:37px}.frog-face{fill:var(--primary-container)}.frog-eye{fill:var(--on-primary-container)}.frog-smile{fill:none;stroke:#d87969;stroke-width:3;stroke-linecap:round}#frog-loader{position:absolute;right:-3px;bottom:-3px;width:18px;height:18px;border:2px solid rgba(255,255,255,.92);border-radius:50%;background:#2ca76a;box-shadow:0 2px 7px rgba(14,57,35,.28);opacity:0;transform:scale(.72);transition:opacity .16s ease,transform .2s cubic-bezier(.22,1,.36,1);pointer-events:none}#frog.busy #frog-loader{opacity:1;transform:scale(1)}#frog.busy #frog-loader:after{content:"";position:absolute;inset:2px;border:2px solid rgba(255,255,255,.38);border-top-color:#fff;border-radius:50%;animation:rf-spin .72s linear infinite}#frog-status{position:absolute;inset:-3px;display:flex;align-items:center;justify-content:center;border-radius:50%;color:#fff;opacity:0;transform:translate(0,0) scale(1);box-shadow:0 7px 22px rgba(20,80,49,.28);transition:opacity .12s ease,transform .48s cubic-bezier(.22,1,.36,1),box-shadow .35s ease;pointer-events:none}#frog-status .status-icon{width:30px;height:30px;stroke-width:2.5}#frog-status.show{opacity:1;transform:translate(0,0) scale(1);transition:transform .48s cubic-bezier(.22,1,.36,1),box-shadow .35s ease}#frog-status.ok{background:linear-gradient(145deg,#49c986,#197b4b)}#frog-status.warn{background:linear-gradient(145deg,#efad55,#c66a26)}#frog-status.show.minimized{transform:translate(17px,17px) scale(.34);box-shadow:0 5px 16px rgba(20,70,43,.32)}#frog:active{box-shadow:0 3px 12px rgba(20,80,49,.3)}#frog.tucked{opacity:.46;box-shadow:none}#frog-dock.side-right #frog.tucked{transform:translateX(35px)}#frog-dock.side-left #frog.tucked{transform:translateX(-35px)}#frog-dock.side-right #frog.tucked #frog-icon{transform:translateX(-12px) scale(.72)}#frog-dock.side-left #frog.tucked #frog-icon{transform:translateX(12px) scale(.72)}#frog-dock.side-right #frog.tucked.busy #frog-loader{transform:translateX(-30px) scale(1)}#frog-dock.side-right #frog.tucked #frog-status.show.minimized{transform:translate(-15px,17px) scale(.34)}@keyframes rf-spin{to{transform:rotate(360deg)}}
       /* 长按悬浮球弹出的紧凑操作面板。 */
       #frog-actions{position:absolute;bottom:68px;width:206px;padding:10px;display:grid;grid-template-columns:1fr 1fr;gap:8px;border:1px solid rgba(255,255,255,.72);border-radius:26px;background:rgba(250,252,248,.94);box-shadow:0 18px 48px rgba(24,48,33,.18);backdrop-filter:blur(18px);opacity:0;visibility:hidden;pointer-events:none;transform:translateY(14px) scale(.92);transition:opacity .2s ease,transform .34s cubic-bezier(.2,.8,.2,1),visibility 0s linear .34s}#frog-dock.side-right #frog-actions{right:8px;transform-origin:bottom right}#frog-dock.side-left #frog-actions{left:8px;transform-origin:bottom left}#frog-actions.below{bottom:auto;top:68px;transform:translateY(-14px) scale(.92)}#frog-actions.open{opacity:1;visibility:visible;pointer-events:auto;transform:translateY(0) scale(1);transition:opacity .18s ease,transform .36s cubic-bezier(.2,.8,.2,1),visibility 0s}#frog-actions button{height:50px;border:0;border-radius:18px;background:var(--surface-container);color:var(--ink);display:flex;align-items:center;gap:8px;padding:6px 10px;font-size:12px;font-weight:720;letter-spacing:.01em;opacity:0;transform:translateY(9px) scale(.96);transition:background .18s ease,opacity .18s ease,transform .3s cubic-bezier(.2,.8,.2,1);-webkit-tap-highlight-color:transparent}#frog-actions button:first-child{background:var(--primary-container);color:var(--on-primary-container)}#frog-actions button:active{background:var(--surface-high);transform:scale(.96)}.action-icon{width:30px;height:30px;flex:0 0 30px;display:grid;place-items:center;border-radius:50%;background:rgba(255,255,255,.64);font-size:16px;font-weight:800}.action-label{white-space:nowrap}#frog-actions.open button{opacity:1;transform:translateY(0) scale(1)}#frog-actions.open button:nth-child(2){transition-delay:.04s}#frog-actions.open button:nth-child(3){transition-delay:.08s}#frog-actions.open button:nth-child(4){transition-delay:.12s}
       /* 底部设置面板。 */
@@ -662,14 +663,69 @@
     return text.length >= 80 || /[.!?。！？；;:]\s*$/.test(text);
   }
 
+  function isInlineSegmentNode(node) {
+    if (node.nodeType === 3) return true;
+    if (node.nodeType !== 1 || node.classList.contains(SOURCE_SEGMENT_CLASS)) return false;
+    return /^(A|SPAN|EM|STRONG|B|I|U|SMALL|SUB|SUP|FONT|MARK|TIME|CITE|Q)$/.test(node.tagName);
+  }
+
+  function directTextRuns(container) {
+    var runs=[];
+    var current=[];
+    function flush() {
+      if (current.length) runs.push(current);
+      current=[];
+    }
+    Array.prototype.forEach.call(container.childNodes,function (node) {
+      if (node.nodeType === 1 && node.tagName === "BR") { flush(); return; }
+      if (isInlineSegmentNode(node)) current.push(node);
+      else flush();
+    });
+    flush();
+    return runs;
+  }
+
+  // 一些旧式新闻页用连续 BR 分段，正文只是 div 的直接文本节点。
+  // 将这些文本段临时包进 span，才能复用现有翻译、切换与精确恢复流程。
+  function wrapBreakSeparatedText(roots) {
+    roots.forEach(function (root) {
+      var containers=[];
+      if (root.matches && root.matches("div,section,article,main")) containers.push(root);
+      Array.prototype.forEach.call(root.querySelectorAll("div,section,article,main"),function (element) { containers.push(element); });
+      containers.forEach(function (container) {
+        var directBreaks=0;
+        var hasWrappedSegment=false;
+        Array.prototype.forEach.call(container.children,function (child) {
+          if (child.tagName === "BR") directBreaks++;
+          if (child.classList.contains(SOURCE_SEGMENT_CLASS)) hasWrappedSegment=true;
+        });
+        if (hasWrappedSegment || directBreaks < 2) return;
+        if (isExcluded(container) || !isVisible(container) || isLikelyInterface(container,root)) return;
+        var runs=directTextRuns(container).filter(function (nodes) {
+          var text=nodes.map(function (node) { return node.textContent || ""; }).join("").replace(/\s+/g," ").trim();
+          return text.length >= 2 && text.length <= MAX_TEXT_LENGTH && /[A-Za-z0-9\u00c0-\uffff]/.test(text);
+        });
+        var total=runs.reduce(function (sum,nodes) { return sum + nodes.map(function (node) { return node.textContent || ""; }).join("").trim().length; },0);
+        if (runs.length < 2 || total < 80 || interactiveDensity(container,normalizedText(container)) > .35) return;
+        runs.forEach(function (nodes) {
+          var wrapper=document.createElement("span");
+          wrapper.className=SOURCE_SEGMENT_CLASS;
+          nodes[0].parentNode.insertBefore(wrapper,nodes[0]);
+          nodes.forEach(function (node) { wrapper.appendChild(node); });
+        });
+      });
+    });
+  }
+
   function candidateElements(roots) {
     var result=[];
     var seen=new Set();
     function add(element) {
       if (!seen.has(element)) { seen.add(element); result.push(element); }
     }
+    wrapBreakSeparatedText(roots);
     roots.forEach(function (root) {
-      var selector="p,h1,h2,h3,h4,h5,h6,li,blockquote,figcaption,td,th,dt,dd";
+      var selector="p,h1,h2,h3,h4,h5,h6,li,blockquote,figcaption,td,th,dt,dd,." + SOURCE_SEGMENT_CLASS;
       if (root.matches && root.matches(selector)) add(root);
       Array.prototype.forEach.call(root.querySelectorAll(selector), add);
       Array.prototype.forEach.call(root.querySelectorAll("div"),function (element) { if (proseLikeDiv(element,root)) add(element); });
@@ -710,7 +766,7 @@
       if (existing) return false;
       var text = normalizedText(element);
       if (text.length < 2 || text.length > MAX_TEXT_LENGTH || !/[A-Za-z0-9\u00c0-\uffff]/.test(text)) return false;
-      var record = { element:element, text:text, status:"pending", translation:"", node:null, error:null, originalFragment:null, placement:bilingualPlacement(element) };
+      var record = { element:element, text:text, status:"pending", translation:"", node:null, error:null, originalFragment:null, synthetic:element.classList.contains(SOURCE_SEGMENT_CLASS), placement:bilingualPlacement(element) };
       app.records.set(element, record); added.push(record);
       return false;
     });
@@ -777,7 +833,15 @@
     else record.element.insertAdjacentElement("afterend", record.node);
   }
 
-  function cleanupRecord(record) { showSource(record); if (record.node) record.node.remove(); record.node = null; }
+  function cleanupRecord(record) {
+    showSource(record);
+    if (record.node) record.node.remove();
+    record.node = null;
+    if (record.synthetic && record.element.parentNode) {
+      while (record.element.firstChild) record.element.parentNode.insertBefore(record.element.firstChild,record.element);
+      record.element.remove();
+    }
+  }
   function sameText(a,b) { return String(a).replace(/\s+/g," ").trim().toLocaleLowerCase() === String(b).replace(/\s+/g," ").trim().toLocaleLowerCase(); }
 
   function recount() {

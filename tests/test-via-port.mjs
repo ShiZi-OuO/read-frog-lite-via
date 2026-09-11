@@ -97,6 +97,31 @@ async function createPage({ oldConfig = null, config = null, failSecondOnce = fa
   await page.close();
 }
 
+// 识别使用连续 BR 而不是 P 标签分段的旧式新闻正文，并在恢复时移除临时包装。
+{
+  const bodyHtml = `<main><div class="article_content"><div class="article_right">
+    <p class="picture">A short image caption.</p><br>
+    First article paragraph stored directly inside a div instead of a paragraph element.<br><br>
+    Second article paragraph follows another pair of line breaks and must be translated independently.<br><br>
+    <strong>Article section heading</strong><br><br>
+    Final article paragraph confirms that the generic line-break layout remains supported.
+  </div></div></main>`;
+  const page = await createPage({ config:baseConfig(), bodyHtml });
+  const originalHtml = await page.locator(".article_right").innerHTML();
+  await startWithFrog(page);
+  await page.waitForFunction(() => document.querySelectorAll(".article_right > .rf-via-source-segment").length >= 4);
+  await page.waitForFunction(() => document.querySelectorAll(".article_right > .rf-via-translation:not([data-rf-error])").length >= 4);
+  const requested = (await page.evaluate(() => window.__requestedTexts)).join(" ");
+  assert.match(requested, /First article paragraph stored directly/);
+  assert.match(requested, /Second article paragraph follows/);
+  assert.match(requested, /Final article paragraph confirms/);
+  await invokeMenu(page, "恢复原文");
+  assert.equal(await page.locator(".rf-via-source-segment").count(), 0);
+  assert.equal(await page.locator(".rf-via-translation").count(), 0);
+  assert.equal(await page.locator(".article_right").innerHTML(), originalHtml);
+  await page.close();
+}
+
 function baseConfig(overrides = {}) {
   return {
     schemaVersion: 2, service: "microsoft", endpoint: "https://api.openai.com/v1/chat/completions",
@@ -326,6 +351,23 @@ async function invokeMenu(page, label) {
   await page.close();
 }
 
+// 翻译期间悬浮球半隐藏时，左右两侧的加载圈都完整留在屏幕内。
+for (const buttonSide of ["right", "left"]) {
+  const page = await createPage({ config:baseConfig({ buttonSide, batchSize:1, concurrency:1 }), delay:500 });
+  await startWithFrog(page);
+  await page.evaluate(() => window.dispatchEvent(new WheelEvent("wheel", { deltaY:120 })));
+  const frog = page.locator("#rf-via-host").locator("#frog");
+  const loader = frog.locator("#frog-loader");
+  await page.waitForFunction(() => document.querySelector("#rf-via-host").shadowRoot.querySelector("#frog").classList.contains("tucked"));
+  await page.waitForTimeout(200);
+  assert.ok(Number(await loader.evaluate((node) => getComputedStyle(node).opacity)) > .9);
+  const loaderBox = await loader.boundingBox();
+  const viewportWidth = await page.evaluate(() => innerWidth);
+  assert.ok(loaderBox.x >= 0, `${buttonSide} loader left=${loaderBox.x}`);
+  assert.ok(loaderBox.x + loaderBox.width <= viewportWidth, `${buttonSide} loader right=${loaderBox.x + loaderBox.width}`);
+  await page.close();
+}
+
 // 忽略布局变化产生的滚动事件；用户主动滚动后保持半隐藏。
 {
   const page = await createPage({ config: baseConfig() });
@@ -462,4 +504,4 @@ async function invokeMenu(page, label) {
 }
 
 await browser.close();
-console.log("Read Frog Via 1.0.0 tests: ok");
+console.log("Read Frog Via 1.0.1 tests: ok");
