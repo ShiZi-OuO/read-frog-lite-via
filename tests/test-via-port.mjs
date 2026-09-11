@@ -85,6 +85,8 @@ async function createPage({ oldConfig = null, config = null, failSecondOnce = fa
   await page.waitForFunction(() => document.querySelectorAll(".markdown-body .rf-via-translation:not([data-rf-error])").length >= 5);
   assert.equal(await page.locator("#repo-toolbar > .rf-via-translation,#repo-meta > .rf-via-translation").count(), 0);
   assert.equal(await page.locator("#repo-toolbar button .rf-via-translation,#repo-meta a .rf-via-translation").count(), 2);
+  await page.locator("#repo-meta a").hover();
+  assert.equal(await page.locator("#repo-meta a .rf-via-translation").evaluate((node) => getComputedStyle(node).textDecorationLine), "underline");
   assert.equal(await page.locator("main > .rf-via-translation").count(), 0);
   assert.equal(await page.locator("#flex-copy > .rf-via-translation").count(), 0);
   assert.equal(await page.locator("#flex-copy p > .rf-via-translation").count(), 1);
@@ -155,6 +157,21 @@ async function createPage({ oldConfig = null, config = null, failSecondOnce = fa
   assert.equal(await page.locator("#media-card source").getAttribute("srcset"), "cover.webp");
   await invokeMenu(page, "恢复原文");
   assert.equal(await page.locator("#media-card").innerHTML(), originalCard);
+  await page.close();
+}
+
+// 长文中的普通文字和链接候选必须按阅读位置混排，链接不能被 500 条上限挤出队列。
+{
+  const paragraphs = Array.from({ length:255 }, (_, index) =>
+    `<p>Readable prefix number ${index} with <a id="term-${index}" href="#term-${index}">interactive concept ${index}</a> followed by explanatory text.</p>`
+  ).join("");
+  const page = await createPage({ config:baseConfig({ mode:"translation", batchSize:5, concurrency:2 }), bodyHtml:`<main>${paragraphs}</main>` });
+  await startWithFrog(page);
+  await page.waitForFunction(() => document.querySelector("#term-0").textContent.includes("译：interactive concept 0"));
+  const firstLink = page.locator("#term-0");
+  await firstLink.hover();
+  assert.equal(await firstLink.locator(".rf-via-interactive-segment").evaluate((node) => getComputedStyle(node).textDecorationLine), "underline");
+  assert.equal(await firstLink.getAttribute("href"), "#term-0");
   await page.close();
 }
 

@@ -214,6 +214,11 @@
       border:0!important;background:transparent!important;border-radius:0!important;
       line-height:inherit!important;white-space:normal!important;opacity:.86!important
     }
+    a:hover .${INTERACTIVE_SEGMENT_CLASS},a:focus-visible .${INTERACTIVE_SEGMENT_CLASS},
+    a:hover .${TRANSLATION_CLASS}[data-rf-interactive='1'],a:focus-visible .${TRANSLATION_CLASS}[data-rf-interactive='1']{
+      text-decoration-line:underline!important;text-decoration-thickness:from-font!important;
+      text-underline-offset:.12em!important
+    }
     .${TRANSLATION_CLASS}[data-rf-error='1']{
       margin:.35em 0!important;padding:.25em 0 .25em .65em!important;
       border-left:2px solid #c94c43!important;background:transparent!important;
@@ -857,17 +862,30 @@
     });
   }
 
-  function priority(record) {
-    var rect = record.element.getBoundingClientRect();
+  function elementPriority(element) {
+    var rect = element.getBoundingClientRect();
     if (rect.bottom >= 0 && rect.top <= innerHeight) return Math.abs(rect.top - innerHeight * .3);
     if (rect.top > innerHeight) return innerHeight + rect.top;
     return innerHeight * 3 + Math.abs(rect.bottom);
   }
 
+  function priority(record) { return elementPriority(record.element); }
+
+  function documentOrder(a,b) {
+    if (a === b) return 0;
+    var position=a.compareDocumentPosition(b);
+    return position & Node.DOCUMENT_POSITION_FOLLOWING ? -1 : 1;
+  }
+
   function scanNewRecords() {
     discardDetachedRecords();
     var added = [], roots=readingRoots();
-    candidateElements(roots).some(function (element) {
+    var candidates=candidateElements(roots);
+    candidates.sort(function (a,b) {
+      var distance=elementPriority(a)-elementPriority(b);
+      return Math.abs(distance) > 1 ? distance : documentOrder(a,b);
+    });
+    candidates.some(function (element) {
       if (app.records.size >= MAX_PARAGRAPHS) return true;
       var root=rootForElement(element, roots);
       var interactive=element.classList.contains(INTERACTIVE_SEGMENT_CLASS);
