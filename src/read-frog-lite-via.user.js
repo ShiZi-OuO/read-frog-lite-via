@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Read Frog Lite for Via
 // @namespace    https://github.com/ShiZi-OuO/read-frog-lite-via
-// @version      1.0.1
-// @description  为 Via 优化的移动端网页翻译：渐进双语翻译、划词翻译、朗读与多服务支持
+// @version      1.1.0
+// @description  为 Via 优化的移动端网页翻译：渐进式翻译、原文切换、自动翻译与多服务支持
 // @author       Read Frog contributors; Modified for Via Browser by shizi
 // @license      GPL-3.0-only
 // @match        http://*/*
@@ -11,7 +11,6 @@
 // @grant        GM_getValue
 // @grant        GM_setValue
 // @grant        GM_addStyle
-// @grant        GM_setClipboard
 // @grant        GM_xmlhttpRequest
 // @grant        GM_registerMenuCommand
 // @connect      *
@@ -38,7 +37,7 @@
   // 配置与持久化状态
   // ---------------------------------------------------------------------------
 
-  var VERSION = "1.0.1";
+  var VERSION = "1.1.0";
   var CONFIG_KEY = "read_frog_via_config_v2";
   var OLD_CONFIG_KEY = "read_frog_via_config_v1";
   var MAX_PARAGRAPHS = 500;
@@ -61,7 +60,8 @@
     batchSize: 5,
     concurrency: 2,
     buttonSide: "right",
-    buttonY: 0.72
+    buttonY: 0.72,
+    autoTranslateHosts: []
   };
 
   var LANGUAGES = [
@@ -97,6 +97,20 @@
     return choices.indexOf(value) >= 0 ? value : fallback;
   }
 
+  function normalizeHost(value) {
+    return String(value || "").trim().toLowerCase().replace(/^\.+|\.+$/g, "");
+  }
+
+  function normalizeHostList(value) {
+    var result=[];
+    if (!Array.isArray(value)) return result;
+    value.forEach(function (item) {
+      var hostName=normalizeHost(item);
+      if (hostName && result.indexOf(hostName) < 0 && result.length < 100) result.push(hostName);
+    });
+    return result;
+  }
+
   // 修复格式错误或写入不完整的配置，避免单项异常导致整个脚本无法运行。
   function normalizeConfig(value) {
     var source = value && typeof value === "object" ? value : {};
@@ -113,7 +127,8 @@
       batchSize: clamp(source.batchSize == null ? DEFAULT_CONFIG.batchSize : source.batchSize, 1, 10),
       concurrency: clamp(source.concurrency == null ? DEFAULT_CONFIG.concurrency : source.concurrency, 1, 4),
       buttonSide: isOneOf(source.buttonSide, ["left", "right"], DEFAULT_CONFIG.buttonSide),
-      buttonY: clamp(source.buttonY == null ? DEFAULT_CONFIG.buttonY : source.buttonY, .12, .84)
+      buttonY: clamp(source.buttonY == null ? DEFAULT_CONFIG.buttonY : source.buttonY, .12, .84),
+      autoTranslateHosts: normalizeHostList(source.autoTranslateHosts)
     };
   }
 
@@ -253,8 +268,6 @@
     eye:lineIcon('<path d="M3 12s3.4-5 9-5 9 5 9 5-3.4 5-9 5-9-5-9-5Z"/><circle cx="12" cy="12" r="2.5"/>'),
     eyeOff:lineIcon('<path d="M4 4l16 16M10.5 7.2c.5-.1 1-.2 1.5-.2 5.6 0 9 5 9 5a15 15 0 0 1-2.2 2.7M6.2 6.3C4.1 7.7 3 9.6 3 12c0 0 3.4 5 9 5 1.1 0 2.1-.2 3-.5"/>'),
     clear:lineIcon('<path d="M5 15.5 11.5 9a2 2 0 0 1 2.8 0l4.7 4.7-5.3 5.3H9.5L5 15.5Z"/><path d="m9 12 5 5"/>'),
-    speak:lineIcon('<path d="M5 10v4h3l4 3V7l-4 3H5Z"/><path d="M15 9.5a4 4 0 0 1 0 5m2-7a7 7 0 0 1 0 9"/>'),
-    copy:lineIcon('<rect x="8" y="8" width="11" height="11" rx="3"/><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2"/>'),
     check:lineIcon('<path d="m6 12 4 4 8-9"/>','status-icon'),
     warning:lineIcon('<path d="M12 6v7m0 4v.1"/>','status-icon')
   };
@@ -262,7 +275,7 @@
   root.innerHTML = `
     <style>
       :host{all:initial;position:fixed!important;left:0!important;top:0!important;width:0!important;height:0!important;margin:0!important;padding:0!important;border:0!important;pointer-events:none!important;--primary:#4d6656;--on-primary:#fff;--primary-container:#d4eadb;--on-primary-container:#183326;--surface:#fafcf8;--surface-container:#eff3ed;--surface-high:#e7ede7;--outline:#c6d0c7;--ink:#1a211c;--muted:#59645d;--focus-ring:rgba(77,102,86,.15);--leaf:var(--primary);--leaf2:#70a989;font-family:system-ui,"Noto Sans SC","MiSans","Microsoft YaHei",sans-serif;color-scheme:light dark}
-      *{box-sizing:border-box}button,input,select{font:inherit}.rf-ui{color:var(--ink);pointer-events:none}.rf-icon{display:block;width:20px;height:20px;flex:0 0 20px}.rf-icon path,.rf-icon rect,.rf-icon circle{vector-effect:non-scaling-stroke}#frog,#frog-actions,#settings,#selection{pointer-events:auto}
+      *{box-sizing:border-box}button,input,select{font:inherit}.rf-ui{color:var(--ink);pointer-events:none}.rf-icon{display:block;width:20px;height:20px;flex:0 0 20px}.rf-icon path,.rf-icon rect,.rf-icon circle{vector-effect:non-scaling-stroke}#frog,#frog-actions,#settings{pointer-events:auto}
       /* 悬浮球及其任务结束状态徽标。 */
       #frog-dock{position:fixed;z-index:2147483646;width:70px;height:70px;overflow:visible;pointer-events:none}#frog-dock.side-right{right:0;left:auto}#frog-dock.side-left{left:0;right:auto}
       #frog{position:absolute;top:10px;width:50px;height:50px;border:1px solid rgba(255,255,255,.32);border-radius:50%;background:linear-gradient(150deg,rgba(255,255,255,.16),transparent 44%),linear-gradient(145deg,var(--leaf2),var(--primary));color:var(--on-primary);box-shadow:0 8px 24px rgba(28,68,44,.26);font-size:25px;line-height:50px;padding:0;touch-action:none;user-select:none;-webkit-tap-highlight-color:transparent;transition:transform .34s cubic-bezier(.2,.8,.2,1),opacity .26s ease-out,box-shadow .22s ease;will-change:transform,opacity}#frog-dock.side-right #frog{right:10px;left:auto}#frog-dock.side-left #frog{left:10px;right:auto}
@@ -273,10 +286,8 @@
       #backdrop{position:fixed;z-index:2147483646;inset:0;background:rgba(22,29,24,.38);backdrop-filter:blur(3px);opacity:0;pointer-events:none;transition:opacity .24s ease}#backdrop.open{opacity:1;pointer-events:auto}
       #settings{position:fixed;z-index:2147483647;left:8px;right:8px;bottom:0;max-height:min(88vh,760px);overflow:auto;overscroll-behavior:contain;background:var(--surface);border:1px solid rgba(255,255,255,.7);border-radius:32px 32px 0 0;padding:10px 14px calc(20px + env(safe-area-inset-bottom));box-shadow:0 -20px 60px rgba(20,35,26,.22);transform:translateY(105%);transition:transform .38s cubic-bezier(.2,.8,.2,1)}#settings.open{transform:translateY(0)}
       .grab{width:34px;height:4px;border-radius:99px;background:var(--outline);margin:2px auto 12px}.head{display:flex;justify-content:space-between;align-items:center;min-height:72px;padding:4px 4px 8px 8px}.head-copy{min-width:0}.title{font-size:21px;font-weight:780;letter-spacing:-.025em}.sub{font-size:12px;color:var(--muted);margin-top:3px}.hero-art{position:relative;width:82px;height:58px;flex:0 0 82px;margin-left:auto;margin-right:8px;overflow:hidden;border-radius:22px;background:linear-gradient(155deg,var(--primary-container),var(--surface-high))}.hero-sun{position:absolute;width:17px;height:17px;border-radius:50%;right:12px;top:9px;background:#f3c982}.hero-hill{position:absolute;width:78px;height:42px;border-radius:50%;left:-18px;bottom:-23px;background:var(--leaf2);opacity:.6}.hero-pond{position:absolute;width:48px;height:19px;border-radius:50%;right:-8px;bottom:3px;background:rgba(115,169,183,.48)}.hero-frog{position:absolute;left:29px;bottom:10px;width:25px;height:21px;border-radius:48% 48% 44% 44%;background:var(--primary)}.hero-frog:before,.hero-frog:after{content:"";position:absolute;top:-5px;width:9px;height:9px;border-radius:50%;background:var(--primary)}.hero-frog:before{left:2px}.hero-frog:after{right:2px}.icon-btn{border:0;background:var(--surface-container);border-radius:50%;width:42px;height:42px;color:var(--ink);display:flex;align-items:center;justify-content:center}.icon-btn .rf-icon{width:21px;height:21px}
-      .section{margin-top:12px;padding:16px;background:var(--surface-container);border-radius:26px}.section:first-of-type{margin-top:4px}.section-title{font-size:13px;font-weight:780;color:var(--primary);letter-spacing:.025em;margin-bottom:10px}label{display:block;font-size:12px;font-weight:680;color:var(--muted);margin:12px 2px 6px}input,select{width:100%;min-height:50px;border:1px solid transparent;border-radius:18px;background:var(--surface);color:var(--ink);padding:10px 14px;font-size:15px;outline:none;transition:border-color .18s ease,box-shadow .18s ease,background .18s ease}input:focus,select:focus{border-color:var(--primary);background:var(--surface);box-shadow:0 0 0 4px var(--focus-ring)}.grid{display:grid;grid-template-columns:1fr 1fr;gap:10px}.key-row{display:flex;gap:8px}.key-row input{flex:1;min-width:0}.key-row button{width:48px;flex:0 0 48px;border:0;border-radius:17px;background:var(--surface-high);color:var(--ink);display:flex;align-items:center;justify-content:center}.key-row button .rf-icon{width:19px;height:19px}.preview{font-size:11px;color:var(--muted);word-break:break-all;margin:8px 2px 0}.hint{font-size:12px;color:var(--muted);line-height:1.6;margin-top:10px}.settings-actions{display:grid;grid-template-columns:1.2fr 1fr;gap:10px;margin:14px 2px 2px}.settings-actions button{min-height:50px;border:0;border-radius:999px;font-weight:760;letter-spacing:.02em}.save{background:var(--primary);color:var(--on-primary);box-shadow:0 8px 20px rgba(28,68,44,.18)}.test{background:var(--primary-container);color:var(--on-primary-container)}#settings-status{font-size:12px;min-height:18px;margin:10px 4px 0;color:var(--muted)}
-      /* 划词工具独立于设置面板显示。 */
-      #selection{position:fixed;z-index:2147483647;width:min(350px,calc(100vw - 20px));display:none;padding:10px;background:rgba(250,252,248,.96);color:var(--ink);border:1px solid rgba(255,255,255,.72);border-radius:24px;box-shadow:0 18px 48px rgba(20,38,27,.22);backdrop-filter:blur(16px)}#selection.open{display:block}.sel-actions{display:flex;gap:7px}.sel-actions button{flex:1;min-height:45px;border:0;border-radius:999px;background:var(--surface-container);color:var(--ink);display:flex;align-items:center;justify-content:center;gap:5px;font-size:11px;font-weight:700;padding:0 7px}.sel-actions button .rf-icon{width:17px;height:17px;flex-basis:17px}.sel-actions .sel-go{background:var(--primary);color:var(--on-primary)}#sel-result{display:none;max-height:230px;overflow:auto;margin-top:9px;padding:13px 14px;background:var(--primary-container);color:var(--on-primary-container);border-radius:18px;font-size:14px;line-height:1.65;white-space:pre-wrap}#sel-result.show{display:block}
-      @media(prefers-color-scheme:dark){#frog-actions,#selection{background:rgba(29,34,30,.95);border-color:rgba(255,255,255,.08)}.action-icon{background:rgba(255,255,255,.1)}#settings{border-color:rgba(255,255,255,.08)}input,select{border-color:transparent}}
+      .section{margin-top:12px;padding:16px;background:var(--surface-container);border-radius:26px}.section:first-of-type{margin-top:4px}.section-title{font-size:13px;font-weight:780;color:var(--primary);letter-spacing:.025em;margin-bottom:10px}label{display:block;font-size:12px;font-weight:680;color:var(--muted);margin:12px 2px 6px}input,select{width:100%;min-height:50px;border:1px solid transparent;border-radius:18px;background:var(--surface);color:var(--ink);padding:10px 14px;font-size:15px;outline:none;transition:border-color .18s ease,box-shadow .18s ease,background .18s ease}input:focus,select:focus{border-color:var(--primary);background:var(--surface);box-shadow:0 0 0 4px var(--focus-ring)}.grid{display:grid;grid-template-columns:1fr 1fr;gap:10px}.site-auto{display:flex;align-items:center;gap:12px;margin:14px 0 0;padding:12px 14px;background:var(--surface);border-radius:20px;cursor:pointer}.site-auto-copy{flex:1;min-width:0}.site-auto-title{font-size:14px;font-weight:760;color:var(--ink)}.site-auto-host{margin-top:3px;font-size:11px;font-weight:560;color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.site-auto input{position:absolute;opacity:0;width:1px;min-height:1px;padding:0}.site-auto-switch{position:relative;width:48px;height:28px;flex:0 0 48px;border-radius:999px;background:var(--outline);transition:background .2s ease}.site-auto-switch:after{content:"";position:absolute;left:4px;top:4px;width:20px;height:20px;border-radius:50%;background:var(--surface);box-shadow:0 2px 5px rgba(20,35,26,.22);transition:transform .24s cubic-bezier(.2,.8,.2,1),background .2s ease}.site-auto input:checked+.site-auto-switch{background:var(--primary)}.site-auto input:checked+.site-auto-switch:after{transform:translateX(20px);background:var(--on-primary)}.site-auto input:focus-visible+.site-auto-switch{box-shadow:0 0 0 4px var(--focus-ring)}.key-row{display:flex;gap:8px}.key-row input{flex:1;min-width:0}.key-row button{width:48px;flex:0 0 48px;border:0;border-radius:17px;background:var(--surface-high);color:var(--ink);display:flex;align-items:center;justify-content:center}.key-row button .rf-icon{width:19px;height:19px}.preview{font-size:11px;color:var(--muted);word-break:break-all;margin:8px 2px 0}.hint{font-size:12px;color:var(--muted);line-height:1.6;margin-top:10px}.settings-actions{display:grid;grid-template-columns:1.2fr 1fr;gap:10px;margin:14px 2px 2px}.settings-actions button{min-height:50px;border:0;border-radius:999px;font-weight:760;letter-spacing:.02em}.save{background:var(--primary);color:var(--on-primary);box-shadow:0 8px 20px rgba(28,68,44,.18)}.test{background:var(--primary-container);color:var(--on-primary-container)}#settings-status{font-size:12px;min-height:18px;margin:10px 4px 0;color:var(--muted)}
+      @media(prefers-color-scheme:dark){#frog-actions{background:rgba(29,34,30,.95);border-color:rgba(255,255,255,.08)}.action-icon{background:rgba(255,255,255,.1)}#settings{border-color:rgba(255,255,255,.08)}input,select{border-color:transparent}}
       @media(prefers-reduced-motion:reduce){*{transition:none!important}#frog-loader:after{animation:none!important}}
     </style>
     <div class="rf-ui">
@@ -287,6 +298,7 @@
         <div class="section"><div class="section-title">阅读偏好</div>
           <label for="language">目标语言</label><select id="language">${languageOptions}</select><input id="custom-language" placeholder="语言名或代码，例如 nl" style="display:none;margin-top:7px">
           <div class="grid"><div><label for="mode">显示模式</label><select id="mode"><option value="bilingual">双语对照</option><option value="translation">直接替换原文</option></select></div><div><label for="translation-style">双语译文样式</label><select id="translation-style"><option value="annotation">细线标记</option><option value="minimal">无样式</option></select></div></div>
+          <label class="site-auto" for="auto-site"><span class="site-auto-copy"><span class="site-auto-title">总是自动翻译此网站</span><span id="auto-site-host" class="site-auto-host"></span></span><input id="auto-site" type="checkbox"><span class="site-auto-switch" aria-hidden="true"></span></label>
         </div>
         <div class="section"><div class="section-title">翻译服务</div>
           <label for="service">服务</label><select id="service"><option value="microsoft">Microsoft 免费翻译</option><option value="deepseek">DeepSeek</option><option value="openai">OpenAI</option><option value="custom">自定义兼容接口</option></select>
@@ -298,7 +310,6 @@
         <div class="section"><div class="section-title">性能</div><div class="grid"><div><label for="batch">每批段落</label><input id="batch" type="number" min="1" max="10"></div><div><label for="concurrency">并发请求</label><input id="concurrency" type="number" min="1" max="4"></div></div></div>
         <div class="settings-actions"><button id="save" class="save">保存设置</button><button id="test" class="test">测试服务</button></div><div id="settings-status"></div>
       </section>
-      <section id="selection"><div class="sel-actions"><button id="sel-translate" class="sel-go">${UI_ICONS.translate}<span class="sel-label">翻译</span></button><button id="sel-speak">${UI_ICONS.speak}<span class="sel-label">朗读</span></button><button id="sel-copy">${UI_ICONS.copy}<span class="sel-label">复制</span></button><button id="sel-close">${UI_ICONS.close}<span class="sel-label">关闭</span></button></div><div id="sel-result"></div></section>
     </div>`;
 
   function $(id) { return root.querySelector("#" + id); }
@@ -309,11 +320,6 @@
   var settings = $("settings");
   var backdrop = $("backdrop");
   var settingsStatus = $("settings-status");
-  var selectionBox = $("selection");
-  var selectionResult = $("sel-result");
-  var selectedText = "";
-  var selectedTranslation = "";
-  var selectedRect = null;
   var tuckTimer = 0;
   var statusMorphTimer = 0;
   var statusTuckTimer = 0;
@@ -365,6 +371,13 @@
   }
 
   function languageLabel(code) { return LANGUAGE_NAMES[code] || code; }
+
+  function currentHost() { return normalizeHost(location.hostname); }
+
+  function autoTranslateEnabled(cfg) {
+    var hostName=currentHost();
+    return !!hostName && cfg.autoTranslateHosts.indexOf(hostName) >= 0;
+  }
 
   // ---------------------------------------------------------------------------
   // 设置表单与接口地址标准化
@@ -426,12 +439,19 @@
     $("endpoint").value = config.endpoint;
     $("batch").value = config.batchSize;
     $("concurrency").value = config.concurrency;
+    $("auto-site").checked = autoTranslateEnabled(config);
+    $("auto-site-host").textContent = currentHost() || "当前页面不可设置";
+    $("auto-site").disabled = !currentHost();
     setApiKeyVisible(false);
     updateServiceFields(false);
   }
 
   function readForm() {
     var language = $("language").value === "custom" ? $("custom-language").value.trim() : $("language").value;
+    var autoHosts=config.autoTranslateHosts.slice();
+    var hostName=currentHost(), hostIndex=autoHosts.indexOf(hostName);
+    if (hostName && $("auto-site").checked && hostIndex < 0) autoHosts.push(hostName);
+    if (hostName && !$("auto-site").checked && hostIndex >= 0) autoHosts.splice(hostIndex,1);
     var next = {
       service: $("service").value,
       endpoint: $("endpoint").value.trim(),
@@ -441,7 +461,8 @@
       mode: $("mode").value,
       translationStyle: $("translation-style").value,
       batchSize: clamp($("batch").value, 1, 10),
-      concurrency: clamp($("concurrency").value, 1, 4)
+      concurrency: clamp($("concurrency").value, 1, 4),
+      autoTranslateHosts: autoHosts
     };
     return Object.assign({}, config, next);
   }
@@ -634,16 +655,8 @@
   }
 
   function readingRoots() {
-    var roots = visibleContentRoots("[itemprop='articleBody'],.markdown-body,.entry-content,.post-content,.article-content,.article-body,.reader-content,.prose,[data-reader-content]", 20);
-    if (roots.length) return roots.concat(articleLeadRoots(roots));
-    var articleRoots = visibleContentRoots("article,[role='article']", 20);
-    var mainRoots = visibleContentRoots("main,[role='main']", 20);
-    if (articleRoots.length) {
-      // 首页常用多个 article 组成信息流；此时只取 article 会漏掉同级的普通新闻卡片。
-      if (mainRoots.length && (articleRoots.length > 1 || articleCoverage(articleRoots,mainRoots) < .68)) return mainRoots;
-      return articleRoots;
-    }
-    return mainRoots.length ? mainRoots : [document.body];
+    // 与 Read Frog 上游一致，从文档内容根开始按实际布局递归，不再猜测某个 article/main 才是正文。
+    return [document.body];
   }
 
   function articleCoverage(articleRoots, mainRoots) {
@@ -797,9 +810,90 @@
     return !!element.querySelector("img,picture,video,audio,svg,canvas,iframe,object,embed,a,button,input,select,textarea,[role='link'],[role='button']");
   }
 
+  var LAYOUT_FORCE_BLOCK_TAGS = new Set([
+    "BODY","H1","H2","H3","H4","H5","H6","BR","FORM","SELECT","BUTTON","LABEL",
+    "UL","OL","LI","BLOCKQUOTE","PRE","ARTICLE","SECTION","FIGURE","FIGCAPTION","HEADER",
+    "FOOTER","MAIN","NAV"
+  ]);
+  var LAYOUT_SKIP_TAGS = new Set([
+    "HEAD","TITLE","HR","INPUT","TEXTAREA","IMG","VIDEO","AUDIO","CANVAS","SOURCE","TRACK",
+    "META","SCRIPT","NOSCRIPT","STYLE","LINK","RT","RP","PRE","CODE","SVG","MATH"
+  ]);
+
+  function isInlineDisplay(display) {
+    display=String(display || "").trim().toLowerCase();
+    return display.indexOf("inline") === 0 || display === "contents" || display.indexOf("ruby") === 0;
+  }
+
+  function usesIconFont(style) {
+    var family=String(style.fontFamily || "").split(",")[0].replace(/[\"']/g,"").trim().toLowerCase();
+    return family === "google symbols" || family === "fontawesome" ||
+      family.indexOf("material icons") === 0 || family.indexOf("material symbols") === 0 ||
+      family.indexOf("font awesome") === 0;
+  }
+
+  function layoutInfo(element) {
+    if (LAYOUT_SKIP_TAGS.has(element.tagName) || element.hidden || element.getAttribute("aria-hidden") === "true" ||
+        element.isContentEditable || element.closest("#rf-via-host,." + TRANSLATION_CLASS)) return null;
+    var style=getComputedStyle(element);
+    if (style.display === "none" || style.visibility === "hidden" || Number(style.opacity) === 0 || usesIconFont(style)) return null;
+    return { inline:!LAYOUT_FORCE_BLOCK_TAGS.has(element.tagName) && isInlineDisplay(style.display) };
+  }
+
+  // 移植上游的布局遍历思想：块节点负责一段，行内节点与文字归入最近的块级段落。
+  function layoutParagraphCandidates(root) {
+    var result=[];
+    function wrapTextNode(node) {
+      var text=(node.nodeValue || "").replace(/\s+/g," ").trim();
+      if (text.length < 2 || !/[A-Za-z0-9\u00c0-\uffff]/.test(text)) return;
+      var wrapper=document.createElement("span");
+      wrapper.className=SOURCE_SEGMENT_CLASS;
+      node.parentNode.insertBefore(wrapper,node);
+      wrapper.appendChild(node);
+      result.push(wrapper);
+    }
+    function visit(element) {
+      var info=layoutInfo(element);
+      if (!info) return { hasText:false, inline:false };
+      if (element.classList.contains(SOURCE_SEGMENT_CLASS)) {
+        return { hasText:normalizedText(element).length > 0, inline:true };
+      }
+      var hasInlineContent=false, hasBlockContent=false;
+      var childResults=[];
+      Array.prototype.slice.call(element.childNodes).forEach(function (child) {
+        if (child.nodeType === 3) {
+          var textPresent=!!(child.nodeValue || "").trim();
+          if (textPresent) hasInlineContent=true;
+          childResults.push({ node:child, hasText:textPresent, inline:true });
+          return;
+        }
+        if (child.nodeType !== 1) return;
+        var childInfo=visit(child);
+        childResults.push({ node:child, hasText:childInfo.hasText, inline:childInfo.inline });
+        if (!childInfo.hasText) return;
+        if (childInfo.inline) hasInlineContent=true;
+        else hasBlockContent=true;
+      });
+      var hasText=hasInlineContent || hasBlockContent;
+      if (!info.inline && hasInlineContent && !hasBlockContent && normalizedText(element).length >= 2) result.push(element);
+      else if (!info.inline && hasInlineContent && hasBlockContent) {
+        // 与上游 translateWalkedElement 的连续行内运行一致：不能丢掉块节点之间的署名、日期或裸文本。
+        childResults.forEach(function (child) {
+          if (!child.hasText || !child.inline) return;
+          if (child.node.nodeType === 3) wrapTextNode(child.node);
+          // 可点击节点必须继续走逐文字节点包装，不能整体替换，否则图片、图标和事件会被清掉。
+          else if (!child.node.matches("a,button,[role='link'],[role='button']") && normalizedText(child.node).length >= 2) result.push(child.node);
+        });
+      }
+      return { hasText:hasText, inline:info.inline && !hasBlockContent };
+    }
+    visit(root);
+    return result;
+  }
+
   // 复合标题或署名区域可能同时含图片、图标、作者卡片和多层文字，逐个包装文字以保留这些组件。
   function wrapDirectProtectedText(element) {
-    if (config.mode !== "translation" || !hasProtectedContent(element)) return;
+    if (config.mode !== "translation" || (!hasProtectedContent(element) && !element.children.length)) return;
     function visit(node) {
       if (node.nodeType === 3) {
         var parent=node.parentElement;
@@ -828,18 +922,13 @@
     }
     wrapBreakSeparatedText(roots);
     roots.forEach(function (root) {
-      var selector="p,h1,h2,h3,h4,h5,h6,li,blockquote,figcaption,td,th,dt,dd," +
-        "[itemprop='headline'],[itemprop='description'],[itemprop='author'],[class*='headline'],[class*='title']," +
-        "[class*='subtitle'],[class*='standfirst'],[class*='byline'],[itemprop='datePublished']," +
-        "[class*='pub_time'],[class*='published'],time,." + SOURCE_SEGMENT_CLASS;
-      if (config.mode === "translation") {
-        if (root.matches && root.matches(selector)) wrapDirectProtectedText(root);
-        Array.prototype.forEach.call(root.querySelectorAll(selector),wrapDirectProtectedText);
-      }
-      if (root.matches && root.matches(selector)) add(root);
-      Array.prototype.forEach.call(root.querySelectorAll(selector), add);
-      Array.prototype.forEach.call(root.querySelectorAll("div"),function (element) { if (proseLikeDiv(element,root)) add(element); });
-      Array.prototype.forEach.call(root.querySelectorAll("span,div"),function (element) { if (cardMetadataLike(element,root)) add(element); });
+      var layoutCandidates=layoutParagraphCandidates(root);
+      if (config.mode === "translation") layoutCandidates.forEach(wrapDirectProtectedText);
+      layoutCandidates.forEach(function (element) {
+        // 若已拆出安全文字段，父容器不能再入队，否则仅译文模式会清空其图片、链接或嵌套结构。
+        if (config.mode !== "translation" || !element.querySelector("." + SOURCE_SEGMENT_CLASS)) add(element);
+      });
+      Array.prototype.forEach.call(root.querySelectorAll("." + SOURCE_SEGMENT_CLASS),add);
     });
     // 页面导航、新闻卡片和页脚常把文字直接放在可点击控件中；放在正文候选之后，保证正文优先。
     wrapInteractiveText().forEach(add);
@@ -890,7 +979,7 @@
       var root=rootForElement(element, roots);
       var interactive=element.classList.contains(INTERACTIVE_SEGMENT_CLASS);
       if ((interactive ? isUnsafeInteractiveSegment(element) : isExcluded(element)) ||
-          (!interactive && isLikelyInterface(element,root)) || !isVisible(element) ||
+          (!interactive && interfaceMarker(element,root)) || !isVisible(element) ||
           (!interactive && config.mode === "translation" && hasProtectedContent(element)) ||
           (element.matches("li") && element.querySelector("li"))) return false;
       var existing = app.records.get(element);
@@ -900,7 +989,10 @@
         if (!covered && record.element !== element && record.element.contains(element)) covered=true;
       });
       if (covered) return false;
-      var text = normalizedText(element);
+      // inline 元素的 innerText 在部分 Chromium/WebView 中会扩展到整行兄弟节点；包装段必须只读自身文本。
+      var text = element.classList.contains(SOURCE_SEGMENT_CLASS)
+        ? (element.textContent || "").replace(/\s+/g," ").trim()
+        : normalizedText(element);
       if (text.length < 2 || text.length > MAX_TEXT_LENGTH || !/[A-Za-z0-9\u00c0-\uffff]/.test(text)) return false;
       var rawText=element.textContent || "";
       var record = { element:element, text:text, status:"pending", translation:"", node:null, error:null, originalFragment:null,
@@ -1219,6 +1311,13 @@
     updateActionLabels();
   }
 
+  // 自动翻译只按当前 hostname 精确匹配。配置无效时保持安静，避免每次打开网站都弹出设置。
+  function startAutomaticTranslation() {
+    if (!autoTranslateEnabled(config) || isBusyPhase()) return;
+    try { validateConfig(config); } catch (_) { return; }
+    startTranslation();
+  }
+
   // 每次打开设置都从已保存配置重新填充，未保存的编辑不会影响当前配置。
   function showSettingsStatus(text, error) { settingsStatus.textContent = text; settingsStatus.style.color = error ? "#bd443c" : ""; }
   function openSettings() { frogSummoned=false; closeActions(); untuckFrog(false); fillForm(); showSettingsStatus("", false); settings.classList.add("open"); backdrop.classList.add("open"); }
@@ -1313,51 +1412,15 @@
   $("key-toggle").addEventListener("click", function () { setApiKeyVisible($("api-key").type === "password"); });
   $("key-clear").addEventListener("click", function () { $("api-key").value = ""; $("api-key").focus(); });
   $("save").addEventListener("click", function () {
-    var next = readForm();
-    try { validateConfig(next); saveConfig(next); applyMode(next.mode); showSettingsStatus("设置已保存", false); setTimeout(closeSettings, 450); }
+    var wasAutomatic=autoTranslateEnabled(config), next = readForm();
+    try {
+      validateConfig(next); saveConfig(next); applyMode(next.mode); showSettingsStatus("设置已保存", false);
+      var startNow=!wasAutomatic && autoTranslateEnabled(config);
+      setTimeout(function () { closeSettings(); if (startNow) setTimeout(startAutomaticTranslation,180); }, 450);
+    }
     catch (error) { showSettingsStatus(error.message, true); }
   });
   $("test").addEventListener("click", testService);
-
-  // ---------------------------------------------------------------------------
-  // 适配触摸操作的划词翻译、朗读与复制工具
-  // ---------------------------------------------------------------------------
-
-  function captureSelection() {
-    setTimeout(function () {
-      var selection = window.getSelection(); var text = selection ? selection.toString().trim() : "";
-      if (!text || text.length > MAX_TEXT_LENGTH) return;
-      try {
-        var range = selection.getRangeAt(0); var node = range.commonAncestorContainer.nodeType === 1 ? range.commonAncestorContainer : range.commonAncestorContainer.parentElement;
-        if (node && (host.contains(node) || (node.closest && node.closest("." + TRANSLATION_CLASS)))) return;
-        selectedText = text; selectedTranslation = ""; selectedRect = range.getBoundingClientRect(); showSelection();
-      } catch (_) {}
-    }, 100);
-  }
-
-  function showSelection() {
-    if (!selectedRect) return; selectionResult.classList.remove("show"); selectionResult.textContent = ""; selectionBox.classList.add("open");
-    var width = Math.min(340, innerWidth-20); var left = clamp(selectedRect.left+selectedRect.width/2-width/2,10,innerWidth-width-10);
-    var top = selectedRect.bottom+10; if (top+160>innerHeight) top = Math.max(10,selectedRect.top-115);
-    selectionBox.style.left = left+"px"; selectionBox.style.top = top+"px";
-  }
-
-  document.addEventListener("mouseup", captureSelection, true); document.addEventListener("touchend", captureSelection, { capture:true, passive:true });
-  document.addEventListener("scroll", function () { if (selectionBox.classList.contains("open")) selectionBox.classList.remove("open"); }, true);
-  $("sel-close").addEventListener("click", function () { selectionBox.classList.remove("open"); });
-  $("sel-translate").addEventListener("click", async function () {
-    selectionResult.textContent = "翻译中…"; selectionResult.classList.add("show");
-    try { validateConfig(config); selectedTranslation = (await translateProvider([selectedText], config, null))[0]; selectionResult.textContent = selectedTranslation; }
-    catch (error) { selectionResult.textContent = "失败：" + error.message; }
-  });
-  $("sel-speak").addEventListener("click", function () { if (!("speechSynthesis" in window)) return; speechSynthesis.cancel(); speechSynthesis.speak(new SpeechSynthesisUtterance(selectedTranslation || selectedText)); });
-  $("sel-copy").addEventListener("click", function () { copyText(selectedTranslation || selectedText); var label=this.querySelector(".sel-label"); label.textContent = "已复制"; setTimeout(function(){label.textContent="复制";},1000); });
-
-  function copyText(text) {
-    try { if (typeof GM_setClipboard === "function") return GM_setClipboard(text); } catch (_) {}
-    if (navigator.clipboard && navigator.clipboard.writeText) return navigator.clipboard.writeText(text).catch(function () {});
-    var area=document.createElement("textarea"); area.value=text; document.body.appendChild(area); area.select(); try{document.execCommand("copy");}catch(_){} area.remove();
-  }
 
   if (typeof GM_registerMenuCommand === "function") {
     GM_registerMenuCommand("翻译当前网页", function () { startTranslation(); });
@@ -1373,4 +1436,5 @@
     else if (colorScheme.addListener) colorScheme.addListener(applyDynamicPalette);
   }
   fillForm(); positionFrog(); updateFrogState(); frog.classList.add("tucked");
+  setTimeout(startAutomaticTranslation, 280);
 })();

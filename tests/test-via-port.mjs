@@ -10,10 +10,14 @@ const browser = await chromium.launch({
   executablePath: process.env.CHROME_PATH || "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",
 });
 
-async function createPage({ oldConfig = null, config = null, failSecondOnce = false, delay = 0, themeColor = "", bodyHtml = "" } = {}) {
+async function createPage({ oldConfig = null, config = null, failSecondOnce = false, delay = 0, themeColor = "", bodyHtml = "", pageUrl = "" } = {}) {
   const page = await browser.newPage({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true });
   const content = bodyHtml || `<main><h1>A useful title</h1><p>Hello world.</p><p>Second paragraph.</p><pre><code>const ignored = true;</code></pre><ul><li>List item</li></ul><table><tr><td>Table cell</td></tr></table></main>`;
-  await page.setContent(`<!doctype html><html><head><title>Reading Test</title></head><body>${content}</body></html>`);
+  const documentHtml = `<!doctype html><html><head><title>Reading Test</title></head><body>${content}</body></html>`;
+  if (pageUrl) {
+    await page.route(pageUrl, (route) => route.fulfill({ status:200, contentType:"text/html", body:documentHtml }));
+    await page.goto(pageUrl);
+  } else await page.setContent(documentHtml);
   if (themeColor) await page.evaluate((value) => { const meta=document.createElement("meta"); meta.name="theme-color"; meta.content=value; document.head.appendChild(meta); }, themeColor);
   await page.evaluate(({ oldConfig, config, failSecondOnce, delay }) => {
     const store = {};
@@ -22,14 +26,12 @@ async function createPage({ oldConfig = null, config = null, failSecondOnce = fa
     window.__store = store;
     window.__requestCount = 0;
     window.__requestedTexts = [];
-    window.__clipboard = "";
     window.__menus = {};
     window.__failedSecond = false;
     window.__forceStatus = 0;
     window.GM_getValue = (key, fallback) => key in store ? store[key] : fallback;
     window.GM_setValue = (key, value) => { store[key] = value; };
     window.GM_addStyle = (css) => { const style = document.createElement("style"); style.textContent = css; document.head.appendChild(style); };
-    window.GM_setClipboard = (text) => { window.__clipboard = text; };
     window.GM_registerMenuCommand = (label, handler) => { window.__menus[label] = handler; };
     window.GM_xmlhttpRequest = (options) => {
       window.__requestCount++;
@@ -263,6 +265,7 @@ function baseConfig(overrides = {}) {
     schemaVersion: 2, service: "microsoft", endpoint: "https://api.openai.com/v1/chat/completions",
     apiKey: "", model: "gpt-4o-mini", targetLanguage: "zh-Hans", mode: "bilingual",
     translationStyle: "annotation", replacementUpgradeApplied:true, batchSize: 2, concurrency: 2, buttonSide: "right", buttonY: .72,
+    autoTranslateHosts: [],
     ...overrides,
   };
 }
@@ -339,6 +342,61 @@ async function invokeMenu(page, label) {
   assert.equal(stored.apiKey, "kept-key");
   assert.equal(stored.model, "kept-model");
   assert.equal(stored.targetLanguage, "nl");
+  assert.deepEqual(stored.autoTranslateHosts, []);
+  await page.close();
+}
+
+// 为当前 hostname 开启后自动翻译所有路径，并在设置中明确显示精确生效的域名。
+{
+  const page = await createPage({
+    pageUrl:"https://news.example.test/world/story-1",
+    config:baseConfig({ autoTranslateHosts:["NEWS.EXAMPLE.TEST", "news.example.test", ""] }),
+  });
+  await page.waitForFunction(() => window.__requestCount > 0 && document.querySelectorAll(".rf-via-translation:not([data-rf-error])").length > 0);
+  await invokeMenu(page, "打开 Read Frog 设置");
+  const host = page.locator("#rf-via-host");
+  assert.equal(await host.locator("#auto-site").isChecked(), true);
+  assert.equal(await host.locator("#auto-site-host").textContent(), "news.example.test");
+  assert.deepEqual(await page.evaluate(() => window.__store.read_frog_via_config_v2.autoTranslateHosts), ["news.example.test"]);
+  await host.locator("#auto-site").uncheck();
+  await host.locator("#save").click();
+  assert.deepEqual(await page.evaluate(() => window.__store.read_frog_via_config_v2.autoTranslateHosts), []);
+  await page.close();
+}
+
+// 同一配置不会误作用于其他 hostname；AI 配置无效时也不会自动弹窗或发起请求。
+{
+  const page = await createPage({
+    pageUrl:"https://other.example.test/article",
+    config:baseConfig({ autoTranslateHosts:["news.example.test"] }),
+  });
+  await page.waitForTimeout(650);
+  assert.equal(await page.evaluate(() => window.__requestCount), 0);
+  await invokeMenu(page, "打开 Read Frog 设置");
+  assert.equal(await page.locator("#rf-via-host").locator("#auto-site").isChecked(), false);
+  await page.close();
+
+  const invalidPage = await createPage({
+    pageUrl:"https://news.example.test/private",
+    config:baseConfig({ service:"custom", endpoint:"https://gateway.example/v1", apiKey:"", model:"model", autoTranslateHosts:["news.example.test"] }),
+  });
+  await invalidPage.waitForTimeout(650);
+  assert.equal(await invalidPage.evaluate(() => window.__requestCount), 0);
+  assert.equal(await invalidPage.locator("#rf-via-host").locator("#settings").evaluate((node) => node.classList.contains("open")), false);
+  await invalidPage.close();
+}
+
+// 在设置中首次开启后立即翻译当前页，同时持久化站点规则。
+{
+  const page = await createPage({ pageUrl:"https://reading.example.test/article/2", config:baseConfig() });
+  await page.waitForTimeout(400);
+  assert.equal(await page.evaluate(() => window.__requestCount), 0);
+  await invokeMenu(page, "打开 Read Frog 设置");
+  const host = page.locator("#rf-via-host");
+  await host.locator("#auto-site").check();
+  await host.locator("#save").click();
+  await page.waitForFunction(() => window.__requestCount > 0);
+  assert.deepEqual(await page.evaluate(() => window.__store.read_frog_via_config_v2.autoTranslateHosts), ["reading.example.test"]);
   await page.close();
 }
 
@@ -621,23 +679,5 @@ for (const buttonSide of ["right", "left"]) {
   await page.close();
 }
 
-// 支持划词翻译并复制译文。
-{
-  const page = await createPage({ config: baseConfig() });
-  await page.evaluate(() => {
-    const range=document.createRange(); const node=document.querySelector("p").firstChild;
-    range.selectNodeContents(node); const selection=getSelection(); selection.removeAllRanges(); selection.addRange(range);
-    document.dispatchEvent(new MouseEvent("mouseup", { bubbles:true }));
-  });
-  const selection = page.locator("#rf-via-host").locator("#selection");
-  await selection.waitFor({ state:"visible" });
-  assert.equal(await selection.locator(".sel-actions .rf-icon").count(), 4);
-  await page.locator("#rf-via-host").locator("#sel-translate").click();
-  await page.waitForFunction(() => document.querySelector("#rf-via-host").shadowRoot.querySelector("#sel-result").textContent.startsWith("译："));
-  await page.locator("#rf-via-host").locator("#sel-copy").click();
-  assert.equal(await page.evaluate(() => window.__clipboard), "译：Hello world.");
-  await page.close();
-}
-
 await browser.close();
-console.log("Read Frog Via 1.0.1 tests: ok");
+console.log("Read Frog Via 1.1.0 tests: ok");
