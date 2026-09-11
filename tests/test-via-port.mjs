@@ -10,7 +10,7 @@ const browser = await chromium.launch({
   executablePath: process.env.CHROME_PATH || "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",
 });
 
-async function createPage({ oldConfig = null, config = null, failSecondOnce = false, delay = 0, themeColor = "", bodyHtml = "", pageUrl = "" } = {}) {
+async function createPage({ oldConfig = null, config = null, translationCache = null, failSecondOnce = false, malformedBatch = false, delay = 0, singleDelay = 0, themeColor = "", bodyHtml = "", pageUrl = "" } = {}) {
   const page = await browser.newPage({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true });
   const content = bodyHtml || `<main><h1>A useful title</h1><p>Hello world.</p><p>Second paragraph.</p><pre><code>const ignored = true;</code></pre><ul><li>List item</li></ul><table><tr><td>Table cell</td></tr></table></main>`;
   const documentHtml = `<!doctype html><html><head><title>Reading Test</title></head><body>${content}</body></html>`;
@@ -19,52 +19,65 @@ async function createPage({ oldConfig = null, config = null, failSecondOnce = fa
     await page.goto(pageUrl);
   } else await page.setContent(documentHtml);
   if (themeColor) await page.evaluate((value) => { const meta=document.createElement("meta"); meta.name="theme-color"; meta.content=value; document.head.appendChild(meta); }, themeColor);
-  await page.evaluate(({ oldConfig, config, failSecondOnce, delay }) => {
+  await page.evaluate(({ oldConfig, config, translationCache, failSecondOnce, malformedBatch, delay, singleDelay }) => {
     const store = {};
     if (oldConfig) store.read_frog_via_config_v1 = oldConfig;
     if (config) store.read_frog_via_config_v2 = config;
+    if (translationCache) store.read_frog_via_translation_cache_v1 = translationCache;
     window.__store = store;
     window.__requestCount = 0;
     window.__requestedTexts = [];
     window.__menus = {};
     window.__failedSecond = false;
     window.__forceStatus = 0;
+    window.__requestInFlight = 0;
+    window.__maxRequestInFlight = 0;
     window.GM_getValue = (key, fallback) => key in store ? store[key] : fallback;
     window.GM_setValue = (key, value) => { store[key] = value; };
     window.GM_addStyle = (css) => { const style = document.createElement("style"); style.textContent = css; document.head.appendChild(style); };
     window.GM_registerMenuCommand = (label, handler) => { window.__menus[label] = handler; };
     window.GM_xmlhttpRequest = (options) => {
       window.__requestCount++;
+      window.__requestInFlight++;
+      window.__maxRequestInFlight = Math.max(window.__maxRequestInFlight, window.__requestInFlight);
       window.__lastGmUrl = options.url;
+      let finished = false;
+      const finish = (callback, value) => {
+        if (finished) return;
+        finished = true;
+        window.__requestInFlight--;
+        callback?.(value);
+      };
       let cancelled = false;
-      const handle = { abort() { if (!cancelled) { cancelled = true; options.onabort?.({}); } } };
+      const handle = { abort() { if (!cancelled) { cancelled = true; finish(options.onabort, {}); } } };
       const body = JSON.parse(options.data);
       const microsoft = options.url.includes("edge.microsoft.com");
       const inputs = microsoft ? body : JSON.parse(body.messages[1].content);
+      if (!microsoft) window.__lastSystemPrompt = body.messages[0].content;
       window.__requestedTexts.push(...inputs);
       setTimeout(() => {
         if (cancelled) return;
         if (window.__forceStatus) {
           const status = window.__forceStatus;
-          options.onerror({ status, statusText:"Forced Error", responseText:"test error" });
+          finish(options.onerror, { status, statusText:"Forced Error", responseText:"test error" });
           return;
         }
         if (failSecondOnce && inputs.some((x) => x.includes("Second")) && !window.__failedSecond) {
           window.__failedSecond = true;
-          options.onerror({ status: 429, statusText: "Too Many Requests", responseText: "rate limited" });
+          finish(options.onerror, { status: 429, statusText: "Too Many Requests", responseText: "rate limited" });
           return;
         }
         const translations = inputs.map((x) => `译：${x}`);
-        options.onload({
+        finish(options.onload, {
           status: 200,
           responseText: microsoft
             ? JSON.stringify(translations.map((text) => ({ translations: [{ text }] })))
-            : JSON.stringify({ choices: [{ message: { content: JSON.stringify(translations) } }] }),
+            : JSON.stringify({ choices: [{ message: { content: malformedBatch && inputs.length > 1 ? "invalid batch" : JSON.stringify(translations) } }] }),
         });
-      }, delay || 5);
+      }, (inputs.length === 1 && singleDelay) || delay || 5);
       return handle;
     };
-  }, { oldConfig, config, failSecondOnce, delay });
+  }, { oldConfig, config, translationCache, failSecondOnce, malformedBatch, delay, singleDelay });
   await page.addScriptTag({ content: script });
   return page;
 }
@@ -85,6 +98,7 @@ async function createPage({ oldConfig = null, config = null, failSecondOnce = fa
   const page = await createPage({ config:baseConfig(), bodyHtml });
   await startWithFrog(page);
   await page.waitForFunction(() => document.querySelectorAll(".markdown-body .rf-via-translation:not([data-rf-error])").length >= 5);
+  await page.waitForFunction(() => document.querySelectorAll("#repo-toolbar button .rf-via-translation,#repo-meta a .rf-via-translation").length === 2);
   assert.equal(await page.locator("#repo-toolbar > .rf-via-translation,#repo-meta > .rf-via-translation").count(), 0);
   assert.equal(await page.locator("#repo-toolbar button .rf-via-translation,#repo-meta a .rf-via-translation").count(), 2);
   await page.locator("#repo-meta a").hover();
@@ -421,6 +435,109 @@ async function invokeMenu(page, label) {
   await page.close();
 }
 
+// 目标为中文时，本地跳过纯中文和纯数字，混合语言仍交给 AI，并要求保留已有中文。
+{
+  const bodyHtml = `<main>
+    <p id="chinese-only">这是已经写好的中文界面文字。</p>
+    <p id="mixed-language">当前功能 uses English words and 中文说明。</p>
+    <p id="english-only">This sentence still needs a complete translation.</p>
+    <p id="numbers-only">2026 · 09 · 11</p>
+  </main>`;
+  const page = await createPage({
+    bodyHtml,
+    config:baseConfig({ service:"custom", endpoint:"https://gateway.example/v1", apiKey:"speed-secret", model:"fast-model", targetLanguage:"zh-Hans", mode:"translation", batchSize:5 }),
+  });
+  await startWithFrog(page);
+  await page.waitForFunction(() => document.querySelector("#english-only").textContent.startsWith("译："));
+  const requested = await page.evaluate(() => window.__requestedTexts);
+  assert.equal(requested.includes("这是已经写好的中文界面文字。"), false);
+  assert.equal(requested.includes("2026 · 09 · 11"), false);
+  assert.equal(requested.includes("当前功能 uses English words and 中文说明。"), true);
+  assert.equal(requested.includes("This sentence still needs a complete translation."), true);
+  assert.equal(await page.locator("#chinese-only").textContent(), "这是已经写好的中文界面文字。");
+  assert.match(await page.evaluate(() => window.__lastSystemPrompt), /keep that part unchanged/);
+  await page.close();
+}
+
+// 保留一次批量请求，同时按阅读顺序逐条显示译文，避免整批同时跳出。
+{
+  const bodyHtml = `<main>
+    <p id="reveal-0">First progressive reveal paragraph.</p>
+    <p id="reveal-1">Second progressive reveal paragraph.</p>
+    <p id="reveal-2">Third progressive reveal paragraph.</p>
+    <p id="reveal-3">Fourth progressive reveal paragraph.</p>
+  </main>`;
+  const page = await createPage({
+    bodyHtml,
+    config:baseConfig({ service:"custom", endpoint:"https://gateway.example/v1", apiKey:"key", model:"model", mode:"translation", batchSize:4, concurrency:2 }),
+  });
+  await page.evaluate(() => {
+    window.__revealTimes = [];
+    const seen = new Set();
+    new MutationObserver(() => {
+      for (let index=0; index<4; index++) {
+        const id=`reveal-${index}`;
+        if (!seen.has(id) && document.querySelector(`#${id}`).textContent.startsWith("译：")) {
+          seen.add(id);
+          window.__revealTimes.push({ id, time:performance.now() });
+        }
+      }
+    }).observe(document.querySelector("main"), { childList:true, subtree:true, characterData:true });
+  });
+  await startWithFrog(page);
+  await page.waitForFunction(() => window.__revealTimes.length === 4);
+  const reveals = await page.evaluate(() => window.__revealTimes);
+  assert.deepEqual(reveals.map((item) => item.id).sort(), ["reveal-0","reveal-1","reveal-2","reveal-3"]);
+  assert.ok(reveals.slice(1).every((item,index) => item.time - reveals[index].time >= 30));
+  assert.equal(await page.evaluate(() => window.__requestCount), 1);
+  await page.close();
+}
+
+// AI 批量格式异常时使用受控的两路并行单段补救，避免五段完全串行。
+{
+  const bodyHtml = `<main>
+    <p>First fallback paragraph needs translation.</p>
+    <p>Second fallback paragraph needs translation.</p>
+    <p>Third fallback paragraph needs translation.</p>
+    <p>Fourth fallback paragraph needs translation.</p>
+  </main>`;
+  const page = await createPage({
+    bodyHtml, malformedBatch:true, singleDelay:80,
+    config:baseConfig({ service:"custom", endpoint:"https://gateway.example/v1", apiKey:"key", model:"model", mode:"translation", batchSize:4, concurrency:2 }),
+  });
+  await startWithFrog(page);
+  await page.waitForFunction(() => Array.from(document.querySelectorAll("p")).every((node) => node.textContent.startsWith("译：")));
+  assert.equal(await page.evaluate(() => window.__requestCount), 5);
+  assert.equal(await page.evaluate(() => window.__maxRequestInFlight), 2);
+  await page.close();
+}
+
+// 持久缓存跨页面复用，并确认序列化内容不包含 API Key。
+{
+  const bodyHtml = `<main><p id="cached-text">A unique persistent cache sentence.</p></main>`;
+  const first = await createPage({
+    bodyHtml,
+    config:baseConfig({ service:"custom", endpoint:"https://gateway.example/v1?token=endpoint-secret", apiKey:"first-secret-key", model:"cache-model", mode:"translation" }),
+  });
+  await startWithFrog(first);
+  await first.waitForFunction(() => document.querySelector("#cached-text").textContent.startsWith("译："));
+  await first.waitForFunction(() => Array.isArray(window.__store.read_frog_via_translation_cache_v1) && window.__store.read_frog_via_translation_cache_v1.length > 0);
+  const storedCache = await first.evaluate(() => window.__store.read_frog_via_translation_cache_v1);
+  assert.equal(JSON.stringify(storedCache).includes("first-secret-key"), false);
+  assert.equal(JSON.stringify(storedCache).includes("endpoint-secret"), false);
+  await first.close();
+
+  const second = await createPage({
+    bodyHtml, translationCache:storedCache,
+    config:baseConfig({ service:"custom", endpoint:"https://gateway.example/v1?token=endpoint-secret", apiKey:"second-secret-key", model:"cache-model", mode:"translation" }),
+  });
+  await summonFrog(second);
+  await second.locator("#rf-via-host").locator("#frog").click();
+  await second.waitForFunction(() => document.querySelector("#cached-text").textContent.startsWith("译："));
+  assert.equal(await second.evaluate(() => window.__requestCount), 0);
+  await second.close();
+}
+
 // 单批失败后继续整页任务，并允许只重试失败段落。
 {
   const page = await createPage({ config: baseConfig({ batchSize:1 }), failSecondOnce:true });
@@ -680,4 +797,4 @@ for (const buttonSide of ["right", "left"]) {
 }
 
 await browser.close();
-console.log("Read Frog Via 1.1.0 tests: ok");
+console.log("Read Frog Via 1.1.1 tests: ok");

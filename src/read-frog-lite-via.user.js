@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Read Frog Lite for Via
 // @namespace    https://github.com/ShiZi-OuO/read-frog-lite-via
-// @version      1.1.0
+// @version      1.1.1
 // @description  为 Via 优化的移动端网页翻译：渐进式翻译、原文切换、自动翻译与多服务支持
 // @author       Read Frog contributors; Modified for Via Browser by shizi
 // @license      GPL-3.0-only
@@ -37,9 +37,12 @@
   // 配置与持久化状态
   // ---------------------------------------------------------------------------
 
-  var VERSION = "1.1.0";
+  var VERSION = "1.1.1";
   var CONFIG_KEY = "read_frog_via_config_v2";
   var OLD_CONFIG_KEY = "read_frog_via_config_v1";
+  var TRANSLATION_CACHE_KEY = "read_frog_via_translation_cache_v1";
+  var TRANSLATION_CACHE_LIMIT = 300;
+  var TRANSLATION_CACHE_CHAR_LIMIT = 250000;
   var MAX_PARAGRAPHS = 500;
   var MAX_TEXT_LENGTH = 5000;
   var REQUEST_TIMEOUT = 60000;
@@ -86,6 +89,22 @@
       if (typeof GM_setValue === "function") GM_setValue(key, value);
       else localStorage.setItem(key, JSON.stringify(value));
     } catch (_) {}
+  }
+
+  // 缓存仅保存翻译条件、原文和译文，不把 API Key 写入缓存键。
+  function loadTranslationCache() {
+    var stored=gmGet(TRANSLATION_CACHE_KEY, []), cache=new Map(), kept=[], chars=0;
+    if (!Array.isArray(stored)) return cache;
+    stored.slice(-TRANSLATION_CACHE_LIMIT).reverse().some(function (entry) {
+      if (!Array.isArray(entry) || typeof entry[0] !== "string" || typeof entry[1] !== "string") return;
+      var size=entry[0].length+entry[1].length;
+      if (size > 12000) return false;
+      if (chars+size > TRANSLATION_CACHE_CHAR_LIMIT) return true;
+      kept.push(entry); chars+=size;
+      return false;
+    });
+    kept.reverse().forEach(function (entry) { cache.set(entry[0],entry[1]); });
+    return cache;
   }
 
   function clamp(value, min, max) {
@@ -186,13 +205,46 @@
     jobId: 0,
     records: new Map(),
     requests: new Set(),
-    cache: new Map(),
+    cache: loadTranslationCache(),
     retryQueue: new Set(),
     counters: emptyCounters(),
     rescanPending: false,
     mutationTimer: 0,
     observer: null
   };
+  var cacheWriteTimer = 0;
+
+  function pruneTranslationCache() {
+    function characterCount() {
+      var total=0;
+      app.cache.forEach(function (value,key) { total+=key.length+value.length; });
+      return total;
+    }
+    var chars=characterCount();
+    while (app.cache.size > TRANSLATION_CACHE_LIMIT || chars > TRANSLATION_CACHE_CHAR_LIMIT) {
+      var oldest=app.cache.keys().next();
+      if (oldest.done) break;
+      var value=app.cache.get(oldest.value) || "";
+      chars-=oldest.value.length+value.length;
+      app.cache.delete(oldest.value);
+    }
+  }
+
+  function scheduleCacheWrite() {
+    clearTimeout(cacheWriteTimer);
+    cacheWriteTimer=setTimeout(function () {
+      cacheWriteTimer=0;
+      gmSet(TRANSLATION_CACHE_KEY, Array.from(app.cache.entries()));
+    }, 180);
+  }
+
+  function putTranslationCache(key,value) {
+    if (key.length+value.length > 12000) return;
+    if (app.cache.has(key)) app.cache.delete(key);
+    app.cache.set(key,value);
+    pruneTranslationCache();
+    scheduleCacheWrite();
+  }
 
   function saveConfig(next) {
     config = normalizeConfig(Object.assign({}, config, next));
@@ -572,7 +624,7 @@
 
   function translationMessages(texts, cfg) {
     var target = languageLabel(cfg.targetLanguage);
-    var system = "You are a professional " + target + " translator. Translate naturally and accurately. Preserve meaning, tone, names, code, URLs and numbers. Return only valid JSON: an array of exactly " + texts.length + " translated strings in the same order. No Markdown or explanations. Webpage title: " + document.title.slice(0,300);
+    var system = "You are a professional " + target + " translator. Translate naturally and accurately. If a string already contains " + target + " text, keep that part unchanged and translate only the remaining source-language content. Preserve meaning, tone, names, code, URLs and numbers. Return only valid JSON: an array of exactly " + texts.length + " translated strings in the same order. No Markdown or explanations. Webpage title: " + document.title.slice(0,300);
     return [{ role:"system", content:system }, { role:"user", content:JSON.stringify(texts) }];
   }
 
@@ -596,15 +648,64 @@
     } catch (_) { var outputError = new Error("模型没有按要求返回对应数量的译文"); outputError.kind = "format"; throw outputError; }
   }
 
+  // 只做字符体系明确时的保守判断，避免把法语等拉丁字母语言误判成英语。
+  function isAlreadyTargetText(text, targetLanguage) {
+    text=String(text || "").trim();
+    if (!text) return true;
+    var hasHan=/[\u3400-\u9fff\uf900-\ufaff]/.test(text);
+    var hasLatin=/[A-Za-z\u00c0-\u024f]/.test(text);
+    var hasKana=/[\u3040-\u30ff\u31f0-\u31ff]/.test(text);
+    var hasHangul=/[\u1100-\u11ff\u3130-\u318f\uac00-\ud7af]/.test(text);
+    var hasCyrillic=/[\u0400-\u052f]/.test(text);
+    var hasArabic=/[\u0600-\u06ff\u0750-\u077f]/.test(text);
+    var hasThai=/[\u0e00-\u0e7f]/.test(text);
+    if (!(hasHan || hasLatin || hasKana || hasHangul || hasCyrillic || hasArabic || hasThai)) return true;
+    var target=normalizeLanguage(targetLanguage).toLowerCase();
+    if (target.indexOf("zh") === 0) return hasHan && !(hasLatin || hasKana || hasHangul || hasCyrillic || hasArabic || hasThai);
+    if (target === "ja") return hasKana && !(hasLatin || hasHangul || hasCyrillic || hasArabic || hasThai);
+    if (target === "ko") return hasHangul && !(hasLatin || hasKana || hasCyrillic || hasArabic || hasThai);
+    if (target === "ar") return hasArabic && !(hasLatin || hasKana || hasHangul || hasCyrillic || hasThai);
+    if (target === "th") return hasThai && !(hasLatin || hasKana || hasHangul || hasCyrillic || hasArabic);
+    return false;
+  }
+
+  function translationCacheKey(text,cfg) {
+    var endpoint=cfg.service === "microsoft" ? "microsoft" : resolvedEndpoint(cfg), hash=5381;
+    // 自定义地址可能在查询参数中携带令牌，只保存不可读的作用域摘要。
+    for (var i=0;i<endpoint.length;i++) hash=((hash<<5)+hash)^endpoint.charCodeAt(i);
+    return [cfg.service,(hash>>>0).toString(36),cfg.model,cfg.targetLanguage,text].join("\n");
+  }
+
+  // 批量响应格式异常时最多使用两条补救通道，缩短等待但不制造失控并发。
+  async function retryAiIndividually(texts,cfg,jobId) {
+    var values=new Array(texts.length), cursor=0;
+    async function worker() {
+      while (cursor < texts.length) {
+        if (jobId != null && jobId !== app.jobId) throw requestError("请求已取消", "abort");
+        var index=cursor++;
+        values[index]=(await aiTranslate([texts[index]],cfg,jobId))[0];
+      }
+    }
+    var workers=[], count=Math.max(1,Math.min(2,cfg.concurrency,texts.length));
+    for (var i=0;i<count;i++) workers.push(worker());
+    await Promise.all(workers);
+    return values;
+  }
+
   async function translateProvider(texts, cfg, jobId, bypassCache) {
-    var keys = texts.map(function (text) { return [cfg.service,cfg.endpoint,cfg.model,cfg.apiKey,cfg.targetLanguage,text].join("\n"); });
+    var keys = texts.map(function (text) { return translationCacheKey(text,cfg); });
     var values = new Array(texts.length);
     var missingTexts = [];
     var missingIndexes = [];
 
     // 按段复用缓存；即使一个批次只有部分内容命中缓存，也不重复消耗其翻译额度。
     texts.forEach(function (text, index) {
-      if (!bypassCache && app.cache.has(keys[index])) values[index] = app.cache.get(keys[index]);
+      if (!bypassCache && isAlreadyTargetText(text,cfg.targetLanguage)) values[index] = text;
+      else if (!bypassCache && app.cache.has(keys[index])) {
+        values[index] = app.cache.get(keys[index]);
+        // 命中时移到末尾，使容量淘汰优先保留近期使用的内容。
+        app.cache.delete(keys[index]); app.cache.set(keys[index],values[index]); scheduleCacheWrite();
+      }
       else { missingTexts.push(text); missingIndexes.push(index); }
     });
     if (!missingTexts.length) return values;
@@ -615,13 +716,12 @@
       try { translated = await aiTranslate(missingTexts, cfg, jobId); }
       catch (error) {
         if (error.kind !== "format" || missingTexts.length === 1) throw error;
-        translated = [];
-        for (var i = 0; i < missingTexts.length; i++) translated.push((await aiTranslate([missingTexts[i]], cfg, jobId))[0]);
+        translated = await retryAiIndividually(missingTexts,cfg,jobId);
       }
     }
     missingIndexes.forEach(function (originalIndex, translatedIndex) {
       values[originalIndex] = translated[translatedIndex];
-      if (!bypassCache) app.cache.set(keys[originalIndex], translated[translatedIndex]);
+      if (!bypassCache) putTranslationCache(keys[originalIndex],translated[translatedIndex]);
     });
     return values;
   }
@@ -1180,10 +1280,64 @@
   async function processRecords(records, jobId) {
     var pending = records.slice();
     var cfg = Object.assign({}, config);
+    var readyToReveal = {};
+    var nextReveal = 0;
+    var assignedCount = 0;
+    var lanesFinished = false;
+    var wakeReveal = null;
+
+    function notifyReveal() {
+      if (!wakeReveal) return;
+      var wake = wakeReveal;
+      wakeReveal = null;
+      wake();
+    }
+
+    function waitForReveal() {
+      return new Promise(function (resolve) { wakeReveal = resolve; });
+    }
+
+    function revealPause() {
+      var backlog = assignedCount - nextReveal;
+      // 少量结果舒缓出现；长页面积压时自动加速，避免动画拖慢整个任务。
+      var delay = backlog > 40 ? 16 : backlog > 12 ? 32 : 55;
+      return new Promise(function (resolve) { setTimeout(resolve, delay); });
+    }
+
+    function markReady(record, translation, error) {
+      readyToReveal[record.revealOrder] = { record:record, translation:translation, error:error };
+      notifyReveal();
+    }
+
+    // 网络请求继续按批次并发；渲染单独串行，避免译文成批突然跳到页面上。
+    async function revealInReadingOrder() {
+      while (jobId === app.jobId) {
+        if (!Object.prototype.hasOwnProperty.call(readyToReveal,nextReveal)) {
+          if (lanesFinished && nextReveal >= assignedCount) return;
+          await waitForReveal();
+          continue;
+        }
+        var item = readyToReveal[nextReveal];
+        delete readyToReveal[nextReveal++];
+        if (item.error) {
+          item.record.status = "failed";
+          item.record.error = item.error;
+        } else {
+          item.record.translation = String(item.translation || "").trim();
+          item.record.status = !item.record.translation || sameText(item.record.text,item.record.translation) ? "skipped" : "success";
+        }
+        renderRecord(item.record);
+        recount();
+        if (item.record.status !== "skipped" && jobId === app.jobId) await revealPause();
+      }
+    }
+
     function takeBatch() {
       if (!pending.length) return [];
       pending.sort(function (a,b) { return priority(a) - priority(b); });
-      return pending.splice(0, cfg.batchSize);
+      var batch = pending.splice(0, cfg.batchSize);
+      batch.forEach(function (record) { record.revealOrder = assignedCount++; });
+      return batch;
     }
     async function lane() {
       while (jobId === app.jobId && app.phase !== "stopping") {
@@ -1193,20 +1347,21 @@
           var values = await translateProvider(batch.map(function (r) { return r.text; }), cfg, jobId);
           if (jobId !== app.jobId) return;
           batch.forEach(function (record,index) {
-            record.translation = values[index].trim();
-            record.status = !record.translation || sameText(record.text, record.translation) ? "skipped" : "success";
-            renderRecord(record);
+            markReady(record,values[index],null);
           });
         } catch (error) {
           if (error.kind === "abort" || jobId !== app.jobId) return;
-          batch.forEach(function (record) { record.status = "failed"; record.error = error; renderRecord(record); });
+          batch.forEach(function (record) { markReady(record,null,error); });
         }
-        recount();
       }
     }
     var lanes = [];
+    var revealTask = revealInReadingOrder();
     for (var i=0; i<Math.min(cfg.concurrency, pending.length || 1); i++) lanes.push(lane());
     await Promise.all(lanes);
+    lanesFinished = true;
+    notifyReveal();
+    await revealTask;
   }
 
   // 请求执行期间产生的页面变化先合并记录，在当前批次结束后统一处理，
