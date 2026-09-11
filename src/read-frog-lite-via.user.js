@@ -46,6 +46,7 @@
   var REQUEST_TIMEOUT = 60000;
   var TRANSLATION_CLASS = "rf-via-translation";
   var SOURCE_SEGMENT_CLASS = "rf-via-source-segment";
+  var INTERACTIVE_SEGMENT_CLASS = "rf-via-interactive-segment";
 
   var DEFAULT_CONFIG = {
     schemaVersion: 2,
@@ -207,6 +208,11 @@
     }
     .${TRANSLATION_CLASS}[data-rf-style='minimal']{
       margin:.2em 0!important;padding:0!important;color:inherit!important;opacity:.88!important
+    }
+    .${TRANSLATION_CLASS}[data-rf-interactive='1']{
+      display:inline!important;margin-left:.32em!important;padding:0!important;
+      border:0!important;background:transparent!important;border-radius:0!important;
+      line-height:inherit!important;white-space:normal!important;opacity:.86!important
     }
     .${TRANSLATION_CLASS}[data-rf-error='1']{
       margin:.35em 0!important;padding:.25em 0 .25em .65em!important;
@@ -605,6 +611,11 @@
   }
   function isExcluded(element) { return !!element.closest("script,style,noscript,svg,canvas,video,audio,textarea,input,select,button,pre,code,[contenteditable='true'],nav,footer,header,aside,form,dialog,[role='navigation'],[role='toolbar'],[role='tablist'],[role='menu'],[role='menubar'],[role='button'],[aria-hidden='true'],#rf-via-host,." + TRANSLATION_CLASS); }
 
+  // 链接、按钮等控件只翻译可见文字节点，不能替换控件本身，否则会丢失图标、事件或跳转能力。
+  function isUnsafeInteractiveSegment(element) {
+    return !!element.closest("script,style,noscript,svg,canvas,video,audio,textarea,input,select,pre,code,[contenteditable='true'],[aria-hidden='true'],#rf-via-host,." + TRANSLATION_CLASS);
+  }
+
   function innermostRoots(nodes) {
     return nodes.filter(function (node,index) {
       return nodes.indexOf(node) === index && !nodes.some(function (other) { return other !== node && node.contains(other); });
@@ -619,11 +630,38 @@
 
   function readingRoots() {
     var roots = visibleContentRoots("[itemprop='articleBody'],.markdown-body,.entry-content,.post-content,.article-content,.article-body,.reader-content,.prose,[data-reader-content]", 20);
-    if (roots.length) return roots;
-    roots = visibleContentRoots("article,[role='article']", 20);
-    if (roots.length) return roots;
-    roots = visibleContentRoots("main,[role='main']", 20);
-    return roots.length ? roots : [document.body];
+    if (roots.length) return roots.concat(articleLeadRoots(roots));
+    var articleRoots = visibleContentRoots("article,[role='article']", 20);
+    var mainRoots = visibleContentRoots("main,[role='main']", 20);
+    if (articleRoots.length) {
+      // 首页常用多个 article 组成信息流；此时只取 article 会漏掉同级的普通新闻卡片。
+      if (mainRoots.length && (articleRoots.length > 1 || articleCoverage(articleRoots,mainRoots) < .68)) return mainRoots;
+      return articleRoots;
+    }
+    return mainRoots.length ? mainRoots : [document.body];
+  }
+
+  function articleCoverage(articleRoots, mainRoots) {
+    var articleText=articleRoots.reduce(function (sum,node) { return sum + normalizedText(node).length; },0);
+    var mainText=mainRoots.reduce(function (sum,node) { return sum + normalizedText(node).length; },0);
+    return mainText ? Math.min(1,articleText / mainText) : 1;
+  }
+
+  // 有些新闻站把标题、摘要和作者区放在正文节点的前一个兄弟节点中。
+  function articleLeadRoots(bodyRoots) {
+    var leads=[];
+    bodyRoots.forEach(function (bodyRoot) {
+      var sibling=bodyRoot.previousElementSibling, checked=0;
+      while (sibling && checked++ < 3) {
+        var marker=((typeof sibling.className === "string" ? sibling.className : "") + " " + (sibling.id || "")).toLowerCase();
+        var semantic=/(article|post|story|entry)[\s_-]*(head|top|title|meta)/.test(marker) ||
+          !!sibling.querySelector("h1,[itemprop='headline'],[class*='article_title'],[class*='story-title']");
+        var text=normalizedText(sibling);
+        if (semantic && isVisible(sibling) && text.length >= 2 && text.length <= MAX_TEXT_LENGTH) leads.push(sibling);
+        sibling=sibling.previousElementSibling;
+      }
+    });
+    return innermostRoots(leads);
   }
 
   function interfaceMarker(element, root) {
@@ -661,6 +699,13 @@
     var text=normalizedText(element);
     if (text.length < 36 || isLikelyInterface(element,root)) return false;
     return text.length >= 80 || /[.!?。！？；;:]\s*$/.test(text);
+  }
+
+  function cardMetadataLike(element, root) {
+    if (element.children.length || element.closest("p,h1,h2,h3,h4,h5,h6,a,button,[role='link'],[role='button']")) return false;
+    if (!element.closest("article,li,[class*='card'],[class*='story'],[class*='post']")) return false;
+    var text=normalizedText(element);
+    return text.length >= 2 && text.length <= 120 && /[A-Za-z\u00c0-\uffff]/.test(text) && !isLikelyInterface(element,root);
   }
 
   function isInlineSegmentNode(node) {
@@ -717,6 +762,59 @@
     });
   }
 
+  function wrapInteractiveText() {
+    var wrappers=[];
+    var controls=document.querySelectorAll("a,button,[role='link'],[role='button']");
+    Array.prototype.forEach.call(controls,function (control) {
+      if (!isVisible(control) || control.closest("#rf-via-host,." + TRANSLATION_CLASS)) return;
+      function visit(node) {
+        if (node.nodeType === 3) {
+          var text=(node.nodeValue || "").replace(/\s+/g," ").trim();
+          if (text.length < 2 || text.length > MAX_TEXT_LENGTH || !/[A-Za-z0-9\u00c0-\uffff]/.test(text)) return;
+          var wrapper=document.createElement("span");
+          wrapper.className=SOURCE_SEGMENT_CLASS + " " + INTERACTIVE_SEGMENT_CLASS;
+          node.parentNode.insertBefore(wrapper,node);
+          wrapper.appendChild(node);
+          wrappers.push(wrapper);
+          return;
+        }
+        if (node.nodeType !== 1 || node.classList.contains(SOURCE_SEGMENT_CLASS) ||
+            /^(SCRIPT|STYLE|NOSCRIPT|SVG|CANVAS|VIDEO|AUDIO|TEXTAREA|INPUT|SELECT|PRE|CODE)$/.test(node.tagName) ||
+            node.getAttribute("aria-hidden") === "true" || node.getAttribute("contenteditable") === "true") return;
+        Array.prototype.slice.call(node.childNodes).forEach(visit);
+      }
+      Array.prototype.slice.call(control.childNodes).forEach(visit);
+    });
+    return wrappers;
+  }
+
+  function hasProtectedContent(element) {
+    return !!element.querySelector("img,picture,video,audio,svg,canvas,iframe,object,embed,a,button,input,select,textarea,[role='link'],[role='button']");
+  }
+
+  // 复合标题或署名区域可能同时含图片、图标、作者卡片和多层文字，逐个包装文字以保留这些组件。
+  function wrapDirectProtectedText(element) {
+    if (config.mode !== "translation" || !hasProtectedContent(element)) return;
+    function visit(node) {
+      if (node.nodeType === 3) {
+        var parent=node.parentElement;
+        if (!parent || !isVisible(parent) || parent.closest("a,button,[role='link'],[role='button']")) return;
+        var text=(node.nodeValue || "").replace(/\s+/g," ").trim();
+        if (text.length < 2 || text.length > MAX_TEXT_LENGTH || !/[A-Za-z0-9\u00c0-\uffff]/.test(text)) return;
+        var wrapper=document.createElement("span");
+        wrapper.className=SOURCE_SEGMENT_CLASS;
+        node.parentNode.insertBefore(wrapper,node);
+        wrapper.appendChild(node);
+        return;
+      }
+      if (node.nodeType !== 1 || node.classList.contains(SOURCE_SEGMENT_CLASS) ||
+          /^(SCRIPT|STYLE|NOSCRIPT|SVG|PICTURE|SOURCE|IMG|CANVAS|VIDEO|AUDIO|IFRAME|OBJECT|EMBED|INPUT|SELECT|TEXTAREA)$/.test(node.tagName) ||
+          node.getAttribute("aria-hidden") === "true") return;
+      Array.prototype.slice.call(node.childNodes).forEach(visit);
+    }
+    Array.prototype.slice.call(element.childNodes).forEach(visit);
+  }
+
   function candidateElements(roots) {
     var result=[];
     var seen=new Set();
@@ -725,11 +823,22 @@
     }
     wrapBreakSeparatedText(roots);
     roots.forEach(function (root) {
-      var selector="p,h1,h2,h3,h4,h5,h6,li,blockquote,figcaption,td,th,dt,dd,." + SOURCE_SEGMENT_CLASS;
+      var selector="p,h1,h2,h3,h4,h5,h6,li,blockquote,figcaption,td,th,dt,dd," +
+        "[itemprop='headline'],[itemprop='description'],[itemprop='author'],[class*='headline'],[class*='title']," +
+        "[class*='subtitle'],[class*='standfirst'],[class*='byline'],[itemprop='datePublished']," +
+        "[class*='pub_time'],[class*='published'],time,." + SOURCE_SEGMENT_CLASS;
+      if (config.mode === "translation") {
+        if (root.matches && root.matches(selector)) wrapDirectProtectedText(root);
+        Array.prototype.forEach.call(root.querySelectorAll(selector),wrapDirectProtectedText);
+      }
       if (root.matches && root.matches(selector)) add(root);
       Array.prototype.forEach.call(root.querySelectorAll(selector), add);
       Array.prototype.forEach.call(root.querySelectorAll("div"),function (element) { if (proseLikeDiv(element,root)) add(element); });
+      Array.prototype.forEach.call(root.querySelectorAll("span,div"),function (element) { if (cardMetadataLike(element,root)) add(element); });
     });
+    // 页面导航、新闻卡片和页脚常把文字直接放在可点击控件中；放在正文候选之后，保证正文优先。
+    wrapInteractiveText().forEach(add);
+    Array.prototype.forEach.call(document.querySelectorAll("." + INTERACTIVE_SEGMENT_CLASS),add);
     return result;
   }
 
@@ -761,12 +870,26 @@
     candidateElements(roots).some(function (element) {
       if (app.records.size >= MAX_PARAGRAPHS) return true;
       var root=rootForElement(element, roots);
-      if (isExcluded(element) || isLikelyInterface(element,root) || !isVisible(element) || (element.matches("li") && element.querySelector("li"))) return false;
+      var interactive=element.classList.contains(INTERACTIVE_SEGMENT_CLASS);
+      if ((interactive ? isUnsafeInteractiveSegment(element) : isExcluded(element)) ||
+          (!interactive && isLikelyInterface(element,root)) || !isVisible(element) ||
+          (!interactive && config.mode === "translation" && hasProtectedContent(element)) ||
+          (element.matches("li") && element.querySelector("li"))) return false;
       var existing = app.records.get(element);
       if (existing) return false;
+      var covered=false;
+      app.records.forEach(function (record) {
+        if (!covered && record.element !== element && record.element.contains(element)) covered=true;
+      });
+      if (covered) return false;
       var text = normalizedText(element);
       if (text.length < 2 || text.length > MAX_TEXT_LENGTH || !/[A-Za-z0-9\u00c0-\uffff]/.test(text)) return false;
-      var record = { element:element, text:text, status:"pending", translation:"", node:null, error:null, originalFragment:null, synthetic:element.classList.contains(SOURCE_SEGMENT_CLASS), placement:bilingualPlacement(element) };
+      var rawText=element.textContent || "";
+      var record = { element:element, text:text, status:"pending", translation:"", node:null, error:null, originalFragment:null,
+        synthetic:element.classList.contains(SOURCE_SEGMENT_CLASS), interactive:interactive,
+        leadingSpace:interactive ? (rawText.match(/^\s*/) || [""])[0] : "",
+        trailingSpace:interactive ? (rawText.match(/\s*$/) || [""])[0] : "",
+        placement:interactive ? "after" : bilingualPlacement(element) };
       app.records.set(element, record); added.push(record);
       return false;
     });
@@ -779,13 +902,15 @@
   // ---------------------------------------------------------------------------
 
   function makeTranslationNode(record, error) {
-    var node = document.createElement(record.placement === "inner-inline" ? "span" : "div");
+    var node = document.createElement(record.interactive || record.placement === "inner-inline" ? "span" : "div");
     node.className = TRANSLATION_CLASS;
     node.dataset.rfStyle = config.translationStyle;
+    if (record.interactive) node.dataset.rfInteractive = "1";
     if (error) {
       node.dataset.rfError = "1";
       var message = document.createElement("span"); message.textContent = "翻译失败：" + error.message;
-      var retry = document.createElement("button"); retry.className = "rf-via-retry"; retry.textContent = "重试";
+      var retry = document.createElement(record.interactive ? "span" : "button"); retry.className = "rf-via-retry"; retry.textContent = "重试";
+      if (record.interactive) { retry.setAttribute("role","button"); retry.setAttribute("tabindex","0"); }
       retry.addEventListener("click", function () { retryRecord(record); });
       node.appendChild(message); node.appendChild(retry);
     } else node.textContent = record.translation;
@@ -815,7 +940,7 @@
     var fragment = document.createDocumentFragment();
     while (record.element.firstChild) fragment.appendChild(record.element.firstChild);
     record.originalFragment = fragment;
-    record.element.textContent = record.translation;
+    record.element.textContent = record.leadingSpace + record.translation + record.trailingSpace;
   }
 
   function renderRecord(record) {
@@ -833,13 +958,22 @@
     else record.element.insertAdjacentElement("afterend", record.node);
   }
 
-  function cleanupRecord(record) {
+  function clearRecordRendering(record) {
     showSource(record);
     if (record.node) record.node.remove();
     record.node = null;
+  }
+
+  function unwrapSourceSegment(element) {
+    if (!element || !element.parentNode) return;
+    while (element.firstChild) element.parentNode.insertBefore(element.firstChild,element);
+    element.remove();
+  }
+
+  function cleanupRecord(record) {
+    clearRecordRendering(record);
     if (record.synthetic && record.element.parentNode) {
-      while (record.element.firstChild) record.element.parentNode.insertBefore(record.element.firstChild,record.element);
-      record.element.remove();
+      unwrapSourceSegment(record.element);
     }
   }
   function sameText(a,b) { return String(a).replace(/\s+/g," ").trim().toLocaleLowerCase() === String(b).replace(/\s+/g," ").trim().toLocaleLowerCase(); }
@@ -1022,6 +1156,8 @@
   function restorePage() {
     stopTranslation(); app.active = false; app.rescanPending = false; stopObserver();
     app.records.forEach(cleanupRecord); app.records.clear(); app.counters = emptyCounters();
+    // 候选扫描可能包装了尚未进入队列的交互文字，恢复时也必须一并还原。
+    Array.prototype.slice.call(document.querySelectorAll("." + SOURCE_SEGMENT_CLASS)).forEach(unwrapSourceSegment);
     setPhase("idle");
   }
 
@@ -1030,7 +1166,7 @@
     if (isBusyPhase()) {
       app.retryQueue.add(record); return;
     }
-    cleanupRecord(record); record.status = "pending"; record.error = null;
+    clearRecordRendering(record); record.status = "pending"; record.error = null;
     var jobId = ++app.jobId; setPhase("translating");
     await processRecords([record], jobId);
     if (jobId !== app.jobId || !app.active) return;

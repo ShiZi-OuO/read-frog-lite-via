@@ -67,7 +67,7 @@ async function createPage({ oldConfig = null, config = null, failSecondOnce = fa
   return page;
 }
 
-// 双语翻译仅处理阅读正文，并确保紧凑工具栏和 flex 布局不被撑坏。
+// 双语翻译正文及可点击文字，同时不把工具栏/元数据容器整体当成段落。
 {
   const bodyHtml = `<main>
     <div id="repo-toolbar" role="toolbar" style="display:flex;gap:8px"><div>Preview</div><div>Code</div><div>Blame</div><button>More</button></div>
@@ -81,19 +81,138 @@ async function createPage({ oldConfig = null, config = null, failSecondOnce = fa
     </article>
   </main>`;
   const page = await createPage({ config:baseConfig(), bodyHtml });
-  const toolbarHeight = await page.locator("#repo-toolbar").evaluate((node) => node.getBoundingClientRect().height);
   await startWithFrog(page);
   await page.waitForFunction(() => document.querySelectorAll(".markdown-body .rf-via-translation:not([data-rf-error])").length >= 5);
-  assert.equal(await page.locator("#repo-toolbar .rf-via-translation,#repo-meta .rf-via-translation").count(), 0);
+  assert.equal(await page.locator("#repo-toolbar > .rf-via-translation,#repo-meta > .rf-via-translation").count(), 0);
+  assert.equal(await page.locator("#repo-toolbar button .rf-via-translation,#repo-meta a .rf-via-translation").count(), 2);
   assert.equal(await page.locator("main > .rf-via-translation").count(), 0);
   assert.equal(await page.locator("#flex-copy > .rf-via-translation").count(), 0);
   assert.equal(await page.locator("#flex-copy p > .rf-via-translation").count(), 1);
-  assert.equal(await page.locator("#repo-toolbar").evaluate((node) => node.getBoundingClientRect().height), toolbarHeight);
   assert.equal(await page.evaluate(() => document.documentElement.scrollWidth), await page.evaluate(() => document.documentElement.clientWidth));
   const requested = (await page.evaluate(() => window.__requestedTexts)).join(" ");
-  assert.doesNotMatch(requested, /Preview|Blame|163 lines|9\.66 KB|History/);
+  assert.doesNotMatch(requested, /Preview|Blame|163 lines|9\.66 KB/);
+  assert.match(requested, /More|History/);
   assert.match(requested, /Better reading experience|cross-platform reading tool/);
   if (process.env.RF_QA_LAYOUT) await page.screenshot({ path:process.env.RF_QA_LAYOUT, fullPage:true });
+  await page.close();
+}
+
+// 通用处理导航、新闻卡片、加载按钮和页脚链接：只替换文字，保留控件结构与事件。
+{
+  const bodyHtml = `
+    <header><nav><a id="world-link" href="#world"><svg aria-hidden="true"></svg><span>World News</span></a></nav></header>
+    <main><section>
+      <a id="story-link" href="#story"><span class="icon" aria-hidden="true">●</span><strong>Interactive headline inside a news card</strong></a>
+      <button id="load-more" type="button"><span>Load more articles</span></button>
+    </section></main>
+    <footer><a id="about-link" href="#about">About this publisher</a></footer>`;
+  const page = await createPage({ config:baseConfig({ mode:"translation" }), bodyHtml });
+  await page.evaluate(() => {
+    window.__clicks = { story:0, load:0 };
+    document.querySelector("#story-link").addEventListener("click", (event) => { event.preventDefault(); window.__clicks.story++; });
+    document.querySelector("#load-more").addEventListener("click", () => {
+      window.__clicks.load++;
+      const link=document.createElement("a"); link.id="dynamic-story"; link.href="#dynamic";
+      link.textContent="New interactive headline loaded after scrolling";
+      document.querySelector("main section").appendChild(link);
+    });
+  });
+  await startWithFrog(page);
+  await page.waitForFunction(() =>
+    document.querySelector("#world-link").textContent.includes("译：World News") &&
+    document.querySelector("#story-link").textContent.includes("译：Interactive headline") &&
+    document.querySelector("#load-more").textContent.includes("译：Load more articles") &&
+    document.querySelector("#about-link").textContent.includes("译：About this publisher")
+  );
+  assert.equal(await page.locator("#story-link .icon").count(), 1);
+  assert.equal(await page.locator("#story-link").getAttribute("href"), "#story");
+  await page.locator("#story-link").click();
+  await page.locator("#load-more").click();
+  assert.deepEqual(await page.evaluate(() => window.__clicks), { story:1, load:1 });
+  await page.waitForFunction(() => document.querySelector("#dynamic-story").textContent.includes("译：New interactive headline"));
+  await invokeMenu(page, "恢复原文");
+  assert.equal(await page.locator(".rf-via-source-segment").count(), 0);
+  assert.equal(await page.locator("#world-link").textContent(), "World News");
+  assert.equal(await page.locator("#story-link").textContent(), "●Interactive headline inside a news card");
+  assert.equal(await page.locator("#load-more").textContent(), "Load more articles");
+  assert.equal(await page.locator("#about-link").textContent(), "About this publisher");
+  assert.equal(await page.locator("#dynamic-story").textContent(), "New interactive headline loaded after scrolling");
+  await page.close();
+}
+
+// 含图片的新闻卡片不能整体替换，只翻译其文字区域并保留 picture/img。
+{
+  const bodyHtml = `<main><ul><li id="media-card">
+    <div class="media"><picture><source srcset="cover.webp"><img src="cover.jpg" alt="News cover"></picture></div>
+    <div class="copy"><h3 class="card-headline"><span>Technology</span><strong>A headline beside an important photograph</strong></h3><time>4h ago</time></div>
+  </li></ul></main>`;
+  const page = await createPage({ config:baseConfig({ mode:"translation" }), bodyHtml });
+  const originalCard = await page.locator("#media-card").innerHTML();
+  await startWithFrog(page);
+  await page.waitForFunction(() => document.querySelector("#media-card").textContent.includes("译："));
+  assert.equal(await page.locator("#media-card picture").count(), 1);
+  assert.equal(await page.locator("#media-card img").getAttribute("src"), "cover.jpg");
+  assert.equal(await page.locator("#media-card source").getAttribute("srcset"), "cover.webp");
+  await invokeMenu(page, "恢复原文");
+  assert.equal(await page.locator("#media-card").innerHTML(), originalCard);
+  await page.close();
+}
+
+// 正文容器之外的相邻文章标题区也应翻译，并保留署名中的头像/作者组件。
+{
+  const bodyHtml = `<div class="article">
+    <div class="story-header">
+      <div class="article_title">A summit headline placed before the article body</div>
+      <div class="article_subtitle">A descriptive standfirst belongs to the same story</div>
+      <span class="byline">By First Reporter and <span class="author-popover"><a href="#author"><img src="author.png" alt="Author"></a></span> Second Reporter in Beijing</span>
+      <span class="pub_time">Published: September 11, 2026</span>
+    </div>
+    <div class="article_content"><p>The main article body starts in a separate sibling container and contains enough readable text.</p></div>
+  </div>`;
+  const page = await createPage({ config:baseConfig({ mode:"translation" }), bodyHtml });
+  const originalArticle = await page.locator(".article").innerHTML();
+  await startWithFrog(page);
+  await page.waitForFunction(() =>
+    document.querySelector(".article_title").textContent.includes("译：A summit headline") &&
+    document.querySelector(".article_subtitle").textContent.includes("译：A descriptive standfirst") &&
+    document.querySelector(".pub_time").textContent.includes("译：Published")
+  );
+  const requested = (await page.evaluate(() => window.__requestedTexts)).join(" ");
+  assert.match(requested, /By First Reporter|Second Reporter in Beijing/);
+  assert.equal(await page.locator(".author-popover img").getAttribute("src"), "author.png");
+  await invokeMenu(page, "恢复原文");
+  assert.equal(await page.locator(".article").innerHTML(), originalArticle);
+  await page.close();
+}
+
+// 多 article 首页应扫描整个 main，不能让右侧信息流遮蔽同级卡片的简介和作者。
+{
+  const bodyHtml = `<main>
+    <section id="story-grid"><div class="content-card">
+      <img src="phone.jpg" alt="Phone">
+      <a href="#phone">A linked card headline</a>
+      <p id="card-summary">Cameras do not need to be placed in every product.</p>
+      <div><span><span id="card-author">John Example</span></span></div>
+    </div></section>
+    <div id="quick-posts">
+      <article><p id="quick-one">A first quick post that is long enough to form a semantic article root.</p></article>
+      <article><p id="quick-two">A second quick post that would previously monopolize the reading roots.</p></article>
+    </div>
+  </main>`;
+  const page = await createPage({ config:baseConfig({ mode:"translation" }), bodyHtml });
+  await startWithFrog(page);
+  await page.waitForFunction(() =>
+    document.querySelector("#card-summary").textContent.includes("译：Cameras") &&
+    document.querySelector("#card-author").textContent.includes("译：John Example") &&
+    document.querySelector("#quick-one").textContent.includes("译：A first quick post") &&
+    document.querySelector("#quick-two").textContent.includes("译：A second quick post")
+  );
+  assert.equal(await page.locator("#story-grid img").getAttribute("src"), "phone.jpg");
+  const requested = (await page.evaluate(() => window.__requestedTexts)).join(" ");
+  assert.match(requested, /A first quick post|A second quick post/);
+  await invokeMenu(page, "恢复原文");
+  assert.equal(await page.locator("#card-summary").textContent(), "Cameras do not need to be placed in every product.");
+  assert.equal(await page.locator("#card-author").textContent(), "John Example");
   await page.close();
 }
 
