@@ -14,6 +14,7 @@ Read Frog Lite for Via 以单文件用户脚本形式运行在 Via 中。点击�
 ## Features
 
 - 为 Via 浏览器和 Android WebView 的移动阅读场景优化
+- 页面加载期间尽早显示悬浮球，并兼容限制内联样式的严格 CSP 网站
 - 渐进式网页正文翻译，优先处理当前阅读区域，并让批量结果逐条自然显示
 - 双语对照与“直接替换原文”模式，可随时切换或恢复原文
 - 可为指定网站开启自动翻译，默认仍保持手动触发
@@ -54,6 +55,7 @@ Read Frog Lite for Via 以单文件用户脚本形式运行在 Via 中。点击�
 ## Compatibility
 
 - 设计目标为较新的 Via 浏览器与 Android System WebView。
+- 使用构造样式表加载脚本界面和译文样式，以兼容禁止内联样式的严格 CSP 页面。
 - 脚本优先使用 Via 提供的 `GM_*` API；在缺少部分 API 的环境中会尝试标准 Web API 作为降级路径，但自定义跨域接口可能无法工作。
 - 自定义接口默认要求 HTTPS；仅 `localhost`、`127.0.0.1` 与 Android 模拟器地址 `10.0.2.2` 可使用 HTTP。
 - Canvas、PDF 查看器、封闭 Shadow DOM 等不提供普通网页 DOM 正文的页面，可能无法识别可翻译内容；图片内的文字、CSS 伪元素生成的内容与 iframe 内部也不在翻译范围内。
