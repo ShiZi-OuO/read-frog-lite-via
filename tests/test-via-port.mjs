@@ -10,7 +10,7 @@ const browser = await chromium.launch({
   executablePath: process.env.CHROME_PATH || "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",
 });
 
-async function createPage({ oldConfig = null, config = null, translationCache = null, failSecondOnce = false, malformedBatch = false, delay = 0, singleDelay = 0, themeColor = "", bodyHtml = "", pageUrl = "" } = {}) {
+async function createPage({ oldConfig = null, config = null, translationCache = null, failSecondUntilRetry = false, malformedBatch = false, delay = 0, singleDelay = 0, themeColor = "", bodyHtml = "", pageUrl = "" } = {}) {
   const page = await browser.newPage({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true });
   const content = bodyHtml || `<main><h1>A useful title</h1><p>Hello world.</p><p>Second paragraph.</p><pre><code>const ignored = true;</code></pre><ul><li>List item</li></ul><table><tr><td>Table cell</td></tr></table></main>`;
   const documentHtml = `<!doctype html><html><head><title>Reading Test</title></head><body>${content}</body></html>`;
@@ -19,7 +19,7 @@ async function createPage({ oldConfig = null, config = null, translationCache = 
     await page.goto(pageUrl);
   } else await page.setContent(documentHtml);
   if (themeColor) await page.evaluate((value) => { const meta=document.createElement("meta"); meta.name="theme-color"; meta.content=value; document.head.appendChild(meta); }, themeColor);
-  await page.evaluate(({ oldConfig, config, translationCache, failSecondOnce, malformedBatch, delay, singleDelay }) => {
+  await page.evaluate(({ oldConfig, config, translationCache, failSecondUntilRetry, malformedBatch, delay, singleDelay }) => {
     const store = {};
     if (oldConfig) store.read_frog_via_config_v1 = oldConfig;
     if (config) store.read_frog_via_config_v2 = config;
@@ -28,7 +28,7 @@ async function createPage({ oldConfig = null, config = null, translationCache = 
     window.__requestCount = 0;
     window.__requestedTexts = [];
     window.__menus = {};
-    window.__failedSecond = false;
+    window.__secondFailures = 0;
     window.__forceStatus = 0;
     window.__requestInFlight = 0;
     window.__maxRequestInFlight = 0;
@@ -62,8 +62,9 @@ async function createPage({ oldConfig = null, config = null, translationCache = 
           finish(options.onerror, { status, statusText:"Forced Error", responseText:"test error" });
           return;
         }
-        if (failSecondOnce && inputs.some((x) => x.includes("Second")) && !window.__failedSecond) {
-          window.__failedSecond = true;
+        // 请求层会对 429 最多重试三次；四次均失败后才显示段落级重试入口。
+        if (failSecondUntilRetry && inputs.some((x) => x.includes("Second")) && window.__secondFailures < 4) {
+          window.__secondFailures++;
           finish(options.onerror, { status: 429, statusText: "Too Many Requests", responseText: "rate limited" });
           return;
         }
@@ -77,7 +78,7 @@ async function createPage({ oldConfig = null, config = null, translationCache = 
       }, (inputs.length === 1 && singleDelay) || delay || 5);
       return handle;
     };
-  }, { oldConfig, config, translationCache, failSecondOnce, malformedBatch, delay, singleDelay });
+  }, { oldConfig, config, translationCache, failSecondUntilRetry, malformedBatch, delay, singleDelay });
   await page.addScriptTag({ content: script });
   return page;
 }
@@ -108,8 +109,8 @@ async function createPage({ oldConfig = null, config = null, translationCache = 
   assert.equal(await page.locator("#flex-copy p > .rf-via-translation").count(), 1);
   assert.equal(await page.evaluate(() => document.documentElement.scrollWidth), await page.evaluate(() => document.documentElement.clientWidth));
   const requested = (await page.evaluate(() => window.__requestedTexts)).join(" ");
-  assert.doesNotMatch(requested, /Preview|Blame|163 lines|9\.66 KB/);
-  assert.match(requested, /More|History/);
+  assert.doesNotMatch(requested, /163 lines|9\.66 KB/);
+  assert.match(requested, /More|History|Preview|Blame/);
   assert.match(requested, /Better reading experience|cross-platform reading tool/);
   if (process.env.RF_QA_LAYOUT) await page.screenshot({ path:process.env.RF_QA_LAYOUT, fullPage:true });
   await page.close();
@@ -287,7 +288,7 @@ function baseConfig(overrides = {}) {
 async function summonFrog(page) {
   const frog = page.locator("#rf-via-host").locator("#frog");
   assert.equal(await frog.evaluate((node) => node.classList.contains("tucked")), true);
-  await page.waitForTimeout(320);
+  await page.waitForFunction(() => getComputedStyle(document.querySelector("#rf-via-host").shadowRoot.querySelector("#frog")).boxShadow === "none");
   assert.ok(Number(await frog.evaluate((node) => getComputedStyle(node).opacity)) < .6);
   assert.equal(await frog.evaluate((node) => getComputedStyle(node).boxShadow), "none");
   assert.equal(await frog.evaluate((node) => getComputedStyle(node).clipPath), "none");
@@ -435,6 +436,56 @@ async function invokeMenu(page, label) {
   await page.close();
 }
 
+// 通用覆盖表单标签、控件可见属性、导航/页脚文字，以及老式块级与行内混排内容。
+{
+  const bodyHtml = `<header><p id="header-copy">Account access and support</p></header>
+  <nav><p id="nav-heading">Network, SIM and plans</p></nav>
+  <form id="legacy-form" onsubmit="return false">
+    <h1 id="login-title">Log in</h1>
+    <label id="member-label" for="member-input">Mobile number, member name or email address</label>
+    <input id="member-input" type="text" placeholder="Enter your member name">
+    <label id="student-label"><input id="student-radio" type="radio" name="kind">Student</label>
+    <input id="submit-input" type="submit" value="Submit">
+    <table><tbody><tr><td><span id="legacy-copy">
+      <p><img id="legacy-image" src="data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==" style="width:16px;height:16px"></p>
+      <p id="country-name">United States</p><br>
+      Searching for books with a corresponding <a id="product-link" href="#product">Accelerated Reader 360<sup>®</sup></a>
+      quiz is easy with this book finder. Students, teachers, parents, and librarians can search in English or Spanish.<br><br>
+      Please tell us who you are:
+    </span></td></tr></tbody></table>
+  </form>
+  <footer><p id="footer-heading">Manage your account</p><p id="footer-legal">This service is authorised and regulated for eligible permanent residents.</p></footer>`;
+  const page = await createPage({ config:baseConfig({ mode:"translation", batchSize:5 }), bodyHtml });
+  await page.evaluate(() => {
+    window.__productClicks=0;
+    document.querySelector("#product-link").addEventListener("click", (event) => { event.preventDefault(); window.__productClicks++; });
+  });
+  await startWithFrog(page);
+  await page.waitForFunction(() =>
+    document.querySelector("#login-title").textContent.startsWith("译：") &&
+    document.querySelector("#member-label").textContent.startsWith("译：") &&
+    document.querySelector("#member-input").placeholder.startsWith("译：") &&
+    document.querySelector("#submit-input").value.startsWith("译：") &&
+    document.querySelector("#footer-heading").textContent.startsWith("译：") &&
+    document.querySelector("#legacy-copy").textContent.includes("译：Searching for books")
+  );
+  assert.equal(await page.locator("#legacy-image").count(), 1);
+  assert.equal(await page.locator("#student-radio").count(), 1);
+  const mixedText = (await page.locator("#legacy-copy").textContent()).replace(/\s+/g, " ");
+  assert.match(mixedText, /corresponding\s+译：Accelerated Reader/);
+  assert.match(mixedText, /360®\s+译：quiz is easy/);
+  await page.locator("#product-link").click();
+  assert.equal(await page.evaluate(() => window.__productClicks), 1);
+  await invokeMenu(page, "恢复原文");
+  assert.equal(await page.locator("#login-title").textContent(), "Log in");
+  assert.equal(await page.locator("#member-label").textContent(), "Mobile number, member name or email address");
+  assert.equal(await page.locator("#member-input").getAttribute("placeholder"), "Enter your member name");
+  assert.equal(await page.locator("#submit-input").getAttribute("value"), "Submit");
+  assert.equal(await page.locator("#student-label").textContent(), "Student");
+  assert.equal(await page.locator("#legacy-copy .rf-via-source-segment").count(), 0);
+  await page.close();
+}
+
 // 目标为中文时，本地跳过纯中文和纯数字，混合语言仍交给 AI，并要求保留已有中文。
 {
   const bodyHtml = `<main>
@@ -540,7 +591,7 @@ async function invokeMenu(page, label) {
 
 // 单批失败后继续整页任务，并允许只重试失败段落。
 {
-  const page = await createPage({ config: baseConfig({ batchSize:1 }), failSecondOnce:true });
+  const page = await createPage({ config: baseConfig({ batchSize:1 }), failSecondUntilRetry:true });
   await startWithFrog(page);
   await page.waitForFunction(() => document.querySelectorAll(".rf-via-translation[data-rf-error='1']").length === 1);
   await page.waitForFunction(() => document.querySelectorAll(".rf-via-translation:not([data-rf-error])").length >= 4);
@@ -796,5 +847,111 @@ for (const buttonSide of ["right", "left"]) {
   await page.close();
 }
 
+// 阻塞 head 中的外部脚本，验证页面尚无 body、DOMContentLoaded 尚未触发时青蛙已出现。
+async function createEarlyPage(automatic) {
+  const page = await browser.newPage({ viewport:{ width:390, height:844 }, isMobile:true, hasTouch:true });
+  let releaseScript;
+  const heldScript = new Promise((resolve) => { releaseScript = resolve; });
+  const url = "https://startup.example.test/article";
+  await page.route("https://startup.example.test/hold.js", async (route) => {
+    await heldScript;
+    await route.fulfill({ status:200, contentType:"application/javascript", body:"window.__heldScriptDone = true;" });
+  });
+  await page.route(url, (route) => route.fulfill({
+    status:200, contentType:"text/html",
+    body:'<!doctype html><html><head><script src="/hold.js"></script></head><body><main><h1>Early reading title</h1><p>Early reading paragraph.</p></main></body></html>',
+  }));
+  const config = baseConfig({ autoTranslateHosts:automatic ? ["startup.example.test"] : [] });
+  const mocks = `
+    window.__initHadRoot = !!document.documentElement;
+    window.__requestCount = 0;
+    window.GM_getValue = (key, fallback) => key === "read_frog_via_config_v2" ? ${JSON.stringify(config)} : fallback;
+    window.GM_setValue = () => {};
+    window.GM_addStyle = (css) => { const style = document.createElement("style"); style.textContent = css; (document.head || document.documentElement).appendChild(style); };
+    window.GM_registerMenuCommand = () => {};
+    window.GM_xmlhttpRequest = (options) => {
+      window.__requestCount++;
+      const texts = JSON.parse(options.data);
+      setTimeout(() => options.onload({ status:200, responseText:JSON.stringify(texts.map((text) => ({ translations:[{ text:"译：" + text }] }))) }), 0);
+      return { abort() {} };
+    };
+  `;
+  await page.addInitScript({ content:mocks + "\n" + script });
+  await page.goto(url, { waitUntil:"commit" });
+  await page.waitForFunction(() => {
+    const host = document.querySelector("#rf-via-host");
+    return host && host.getAttribute("data-rf-startup") === "ready" && !document.body && document.readyState === "loading";
+  }, null, { timeout:5000 });
+  assert.equal(await page.locator("#rf-via-host").evaluate((node) => node.parentElement.tagName), "HTML");
+  return { page, releaseScript };
+}
+
+{
+  const { page, releaseScript } = await createEarlyPage(false);
+  assert.equal(await page.evaluate(() => window.__initHadRoot), false);
+  assert.equal(await page.locator("#rf-via-host").locator("#frog").count(), 1);
+  assert.equal(await page.evaluate(() => window.__requestCount), 0);
+  const frog = page.locator("#rf-via-host").locator("#frog");
+  await frog.click({ force:true });
+  await frog.click({ force:true });
+  assert.equal(await frog.evaluate((node) => node.classList.contains("busy")), true);
+  assert.equal(await page.evaluate(() => window.__requestCount), 0);
+  releaseScript();
+  await page.waitForLoadState("load");
+  await page.waitForFunction(() => window.__requestCount > 0);
+  await page.waitForFunction(() => document.querySelector("#rf-via-host").parentElement === document.body);
+  await page.addScriptTag({ content:script });
+  assert.equal(await page.locator("#rf-via-host").count(), 1);
+  await page.evaluate(() => {
+    const replacement = document.createElement("html");
+    replacement.innerHTML = "<head><title>Replacement</title></head><body><main><p>New content.</p></main></body>";
+    document.documentElement.replaceWith(replacement);
+  });
+  await page.waitForFunction(() => document.querySelectorAll("#rf-via-host").length === 1);
+  assert.equal(await page.locator("#rf-via-host").evaluate((node) => node.parentElement.tagName), "BODY");
+  assert.equal(await page.locator("#rf-via-host").locator("#frog").count(), 1);
+  await page.evaluate(() => document.querySelector("#rf-via-host").remove());
+  await page.waitForFunction(() => document.querySelector("#rf-via-host")?.parentElement === document.body);
+  await page.locator("#rf-via-host").locator("#frog").click({ force:true });
+  assert.equal(await page.locator("#rf-via-host").locator("#frog").evaluate((node) => node.classList.contains("tucked")), false);
+  await page.close();
+}
+
+{
+  const { page, releaseScript } = await createEarlyPage(false);
+  const frog = page.locator("#rf-via-host").locator("#frog");
+  await frog.click({ force:true });
+  await frog.click({ force:true });
+  await frog.click({ force:true });
+  releaseScript();
+  await page.waitForLoadState("load");
+  await page.waitForTimeout(100);
+  assert.equal(await page.evaluate(() => window.__requestCount), 0);
+  await page.close();
+}
+
+{
+  const { page, releaseScript } = await createEarlyPage(true);
+  await page.waitForTimeout(350);
+  assert.equal(await page.evaluate(() => window.__requestCount), 0);
+  releaseScript();
+  await page.waitForLoadState("load");
+  await page.waitForFunction(() => window.__requestCount > 0);
+  assert.equal(await page.locator("#rf-via-host").count(), 1);
+  await page.close();
+}
+
+// 部分网站会隐藏 html 下的直接 div；脚本宿主必须覆盖这种页面级样式。
+{
+  const page = await createPage({
+    config:baseConfig(),
+    bodyHtml:'<style>html > div { display:none!important }</style><main><p>Visible reading text.</p></main>',
+  });
+  const host = page.locator("#rf-via-host");
+  assert.equal(await host.evaluate((node) => getComputedStyle(node).display), "block");
+  assert.ok((await host.locator("#frog").boundingBox()).width >= 40);
+  await page.close();
+}
+
 await browser.close();
-console.log("Read Frog Via 1.1.1 tests: ok");
+console.log("Read Frog Via 1.2.1 tests: ok");

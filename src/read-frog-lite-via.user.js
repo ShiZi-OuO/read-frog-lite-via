@@ -1,13 +1,13 @@
 // ==UserScript==
 // @name         Read Frog Lite for Via
 // @namespace    https://github.com/ShiZi-OuO/read-frog-lite-via
-// @version      1.2.0
+// @version      1.2.1
 // @description  为 Via 优化的移动端网页翻译：渐进式翻译、原文切换、自动翻译与多服务支持
 // @author       Read Frog contributors; Modified for Via Browser by shizi
 // @license      GPL-3.0-only
 // @match        http://*/*
 // @match        https://*/*
-// @run-at       document-idle
+// @run-at       document-end
 // @grant        GM_getValue
 // @grant        GM_setValue
 // @grant        GM_addStyle
@@ -31,13 +31,96 @@
 (function () {
   "use strict";
 
-  if (window.top !== window.self || document.getElementById("rf-via-host")) return;
+  if (window.top !== window.self || document.getElementById("rf-via-host") || document.__rfViaBooting) return;
+  document.__rfViaBooting = true;
+
+  // Via 在 document-end 注入时通常已有 body；保留早期 DOM 兜底，
+  // 宿主最终挂在 body 下，避免网页针对 html 直系子节点的隐藏规则。
+  var startupAt = window.performance && performance.now ? performance.now() : 0;
+  var host = document.createElement("div");
+  host.id = "rf-via-host";
+  host.style.cssText = "display:block!important;visibility:visible!important;position:fixed!important;left:0!important;top:0!important;width:0!important;height:0!important;margin:0!important;padding:0!important;border:0!important;z-index:2147483647!important;pointer-events:none!important;";
+  var root = host.attachShadow ? host.attachShadow({ mode:"open" }) : host;
+  var readyObserver = null;
+  var bodyReadyHandler = null;
+  var booted = false;
+  function startupStage(stage) {
+    // 仅记录启动阶段和相对时间，不记录网址、正文、配置或 API Key。
+    host.setAttribute("data-rf-startup", stage);
+    if (startupAt) host.setAttribute("data-rf-start-ms", String(Math.round(startupAt)));
+  }
+  function ensureHost() {
+    var target = document.body || document.documentElement;
+    if (target && host.parentNode !== target) target.appendChild(host);
+  }
+  function bootWhenReady() {
+    if (booted || !document.documentElement) return;
+    booted = true;
+    if (readyObserver) { readyObserver.disconnect(); readyObserver = null; }
+    document.removeEventListener("readystatechange", bootWhenReady);
+    ensureHost();
+    startupStage("shell");
+    root.innerHTML = `
+      <style>
+        :host{all:initial;position:fixed!important;left:0!important;top:0!important;width:0!important;height:0!important;pointer-events:none!important}
+        #frog-dock{position:fixed;right:0;top:72vh;width:70px;height:70px;pointer-events:none}
+        #frog{position:absolute;right:10px;top:10px;width:50px;height:50px;padding:0;border:0;border-radius:50%;background:linear-gradient(145deg,#70a989,#4d6656);color:#fff;opacity:.46;transform:translateX(35px);pointer-events:auto}
+        #frog-icon{display:flex;align-items:center;justify-content:center;transform:translateX(-12px) scale(.72)}
+        .frog-mark{width:37px;height:37px}.frog-face{fill:#d4eadb}.frog-eye{fill:#183326}
+        .frog-smile{fill:none;stroke:#d87969;stroke-width:3;stroke-linecap:round}
+        #frog-loader,#frog-status{display:none}
+      </style>
+      <div id="frog-dock"><button id="frog" class="tucked" aria-label="打开 Read Frog">
+        <span id="frog-icon"><svg class="frog-mark" viewBox="0 0 48 48" aria-hidden="true">
+          <circle class="frog-face" cx="15" cy="15" r="7"/><circle class="frog-face" cx="33" cy="15" r="7"/>
+          <ellipse class="frog-face" cx="24" cy="28" rx="18" ry="14"/>
+          <circle class="frog-eye" cx="15" cy="15" r="2.5"/><circle class="frog-eye" cx="33" cy="15" r="2.5"/>
+          <circle class="frog-eye" cx="21" cy="25" r="1.2"/><circle class="frog-eye" cx="27" cy="25" r="1.2"/>
+          <path class="frog-smile" d="M15 29c2.6 4 6 5.5 9 5.5s6.4-1.5 9-5.5"/>
+        </svg></span><span id="frog-loader" aria-hidden="true"></span><span id="frog-status" aria-hidden="true"></span>
+      </button></div>`;
+    var shellFrog = root.querySelector("#frog");
+    // 只观察 document、html 和 body 的直接子节点：既能处理根节点替换、宿主脱离和 body 到来，
+    // 又不会在新闻流频繁改写正文时为每一处子节点变化付出额外扫描成本。
+    var observedRoot = document.documentElement;
+    var observedBody = document.body;
+    var remountObserver = new MutationObserver(function () {
+      if (document.documentElement !== observedRoot || document.body !== observedBody) {
+        remountObserver.disconnect();
+        remountObserver.observe(document, { childList:true });
+        observedRoot = document.documentElement;
+        if (observedRoot) remountObserver.observe(observedRoot, { childList:true });
+        observedBody = document.body;
+        if (observedBody) remountObserver.observe(observedBody, { childList:true });
+      }
+      ensureHost();
+      if (document.body && bodyReadyHandler) {
+        var handler = bodyReadyHandler; bodyReadyHandler = null; handler();
+      }
+    });
+    remountObserver.observe(document, { childList:true });
+    remountObserver.observe(observedRoot, { childList:true });
+    if (observedBody) remountObserver.observe(observedBody, { childList:true });
+    try { initialize(shellFrog); startupStage("ready"); }
+    catch (error) {
+      startupStage("failed");
+      try { console.warn("[Read Frog Via] 启动失败（仅记录错误类型）:", error && error.name || "Error"); } catch (_) {}
+    }
+  }
+  if (document.documentElement) bootWhenReady();
+  else {
+    readyObserver = new MutationObserver(bootWhenReady);
+    readyObserver.observe(document, { childList:true });
+    document.addEventListener("readystatechange", bootWhenReady);
+  }
+
+  function initialize(shellFrog) {
 
   // ---------------------------------------------------------------------------
   // 配置与持久化状态
   // ---------------------------------------------------------------------------
 
-  var VERSION = "1.2.0";
+  var VERSION = "1.2.1";
   var CONFIG_KEY = "read_frog_via_config_v2";
   var OLD_CONFIG_KEY = "read_frog_via_config_v1";
   var TRANSLATION_CACHE_KEY = "read_frog_via_translation_cache_v1";
@@ -224,6 +307,7 @@
     observer: null
   };
   var cacheWriteTimer = 0;
+  var pendingStart = false;
 
   function pruneTranslationCache() {
     function characterCount() {
@@ -313,11 +397,6 @@
     }
   `);
 
-  var host = document.createElement("div");
-  host.id = "rf-via-host";
-  host.style.cssText = "position:fixed!important;left:0!important;top:0!important;width:0!important;height:0!important;margin:0!important;padding:0!important;border:0!important;z-index:2147483647!important;pointer-events:none!important;";
-  document.documentElement.appendChild(host);
-  var root = host.attachShadow ? host.attachShadow({ mode:"open" }) : host;
   var languageOptions = LANGUAGES.map(function (item) { return "<option value='" + item[0] + "'>" + item[1] + "</option>"; }).join("") + "<option value='custom'>其他语言代码…</option>";
   function lineIcon(body, extraClass) { return '<svg class="rf-icon' + (extraClass ? ' ' + extraClass : '') + '" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">' + body + '</svg>'; }
   var UI_ICONS = {
@@ -374,6 +453,9 @@
         <div class="settings-actions"><button id="save" class="save">保存设置</button><button id="test" class="test">测试服务</button></div><div id="settings-status"></div>
       </section>
     </div>`;
+  // 完整界面接管最早显示的同一个按钮，避免重新绘制时出现两个青蛙或闪白。
+  var fullFrog = root.querySelector("#frog");
+  fullFrog.parentNode.replaceChild(shellFrog, fullFrog);
 
   function $(id) { return root.querySelector("#" + id); }
   var frogDock = $("frog-dock");
@@ -2087,6 +2169,20 @@
   }
 
   async function startTranslation(onlyRecords) {
+    // 正文尚未出现时用户可能先点击。保留一次启动意图，等 body 到来再扫描。
+    if (!document.body) {
+      if (pendingStart || isBusyPhase()) return;
+      try { validateConfig(config); } catch (error) { openSettings(); showSettingsStatus(error.message, true); return; }
+      pendingStart = true;
+      setPhase("scanning");
+      bodyReadyHandler = function () {
+        if (!pendingStart) return;
+        pendingStart = false;
+        app.phase = "idle";
+        startTranslation(onlyRecords);
+      };
+      return;
+    }
     if (isBusyPhase()) return;
     try { validateConfig(config); } catch (error) { openSettings(); showSettingsStatus(error.message, true); return; }
     app.active = true; var jobId = ++app.jobId;
@@ -2129,6 +2225,7 @@
 
   function stopTranslation() {
     if (["scanning","translating"].indexOf(app.phase) < 0) return;
+    pendingStart = false; bodyReadyHandler = null;
     app.phase = "stopping"; app.jobId++;
     app.requests.forEach(function (handle) { try { if (handle.abort) handle.abort(); } catch (_) {} });
     app.requests.clear();
@@ -2137,6 +2234,7 @@
   }
 
   function restorePage() {
+    pendingStart = false; bodyReadyHandler = null;
     stopTranslation(); app.active = false; app.rescanPending = false; app.roundPending = false; app.deferredCandidates = null; app.mutationScope = null; stopObserver();
     app.records.forEach(cleanupRecord); app.records.clear(); app.counters = emptyCounters();
     // 候选扫描可能包装了尚未进入队列的交互文字，恢复时也必须一并还原。
@@ -2402,4 +2500,5 @@
   }
   fillForm(); positionFrog(); updateFrogState(); frog.classList.add("tucked");
   setTimeout(startAutomaticTranslation, 280);
+  }
 })();

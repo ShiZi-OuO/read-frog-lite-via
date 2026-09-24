@@ -1,6 +1,6 @@
 # Read Frog Lite for Via
 
-面向 Via 浏览器的轻量级网页翻译用户脚本，当前版本为 **v1.2.0**。
+面向 Via 浏览器的轻量级网页翻译用户脚本，当前版本为 **v1.2.1**。
 
 > 本项目基于 [Read Frog](https://github.com/mengxi-ream/read-frog) 进行二次开发。  
 > This project is a modified work based on Read Frog.
