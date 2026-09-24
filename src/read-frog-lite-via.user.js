@@ -1734,13 +1734,15 @@
     } else {
       app.deferredCandidates = null;
       candidates = candidateElements(roots);
+      var candidatePriority = new Map();
+      candidates.forEach(function (element) { candidatePriority.set(element, elementPriority(element)); });
       // 块级候选先入队、交互段后入队：这样"容器已被记录"的覆盖判定才能生效，
       // 否则容器与其内部链接会被各翻译一次（同一句话重复渲染 + 重复计费）。
       candidates.sort(function (a,b) {
         var ai = a.classList.contains(INTERACTIVE_SEGMENT_CLASS) ? 1 : 0;
         var bi = b.classList.contains(INTERACTIVE_SEGMENT_CLASS) ? 1 : 0;
         if (ai !== bi) return ai - bi;
-        var distance=elementPriority(a)-elementPriority(b);
+        var distance=candidatePriority.get(a)-candidatePriority.get(b);
         return Math.abs(distance) > 1 ? distance : documentOrder(a,b);
       });
     }
@@ -1779,10 +1781,9 @@
         added.push(existing);
         return false;
       }
-      var covered=false;
-      app.records.forEach(function (record) {
-        if (!covered && record.element !== element && record.element.contains(element)) covered=true;
-      });
+      // 只有已记录的祖先能覆盖当前候选；沿祖先查找，避免每个候选遍历所有记录。
+      var covered=false, ancestor=element.parentElement;
+      while (ancestor && !covered) { covered=app.records.has(ancestor); ancestor=ancestor.parentElement; }
       if (covered) return false;
       // 容器里已经存在子元素的译文时不能再把整容器当新段落：否则"原文"里会混进译文，
       // 译文节点里出现两个标记，等于把译文又翻了一遍。
@@ -1838,7 +1839,7 @@
         app.records.set(element,record); added.push(record); newRecords++;
       });
     });
-    added.sort(function (a,b) { return priority(a) - priority(b); });
+    // processRecords 会按阅读位置排序；此处不再对同一批记录重复读取布局。
     // 兜底：把"上一轮被新任务抢跑"遗留的 pending/running 记录重新纳入本轮。
     // 否则这些记录的原文已经被更新，却再也等不到渲染（页面会永久停在旧译文上）。
     app.records.forEach(function (record) {
@@ -1972,6 +1973,24 @@
   function setPhase(phase) {
     app.phase = phase;
     updateFrogState();
+  }
+
+  // 点击后先把加载状态交给浏览器绘制，再执行可能耗时的整页首次扫描。
+  // 后台标签页可能暂停动画帧，用短定时器保证翻译仍会继续。
+  function allowBusyStateToPaint() {
+    return new Promise(function (resolve) {
+      var done = false;
+      var fallback = setTimeout(finish, 80);
+      function finish() {
+        if (done) return;
+        done = true;
+        clearTimeout(fallback);
+        resolve();
+      }
+      if (typeof requestAnimationFrame === "function") {
+        requestAnimationFrame(function () { requestAnimationFrame(finish); });
+      } else setTimeout(finish, 0);
+    });
   }
 
   // ---------------------------------------------------------------------------
@@ -2189,6 +2208,8 @@
     app.deferredCandidates = null;
     startObserver();
     setPhase("scanning");
+    await allowBusyStateToPaint();
+    if (jobId !== app.jobId) return;
     var records;
     if (onlyRecords) records = onlyRecords.filter(function (record) { return record.element.isConnected; });
     else {
@@ -2198,7 +2219,7 @@
           record.status = "pending"; records.push(record);
         }
       });
-      records.sort(function (a,b) { return priority(a)-priority(b); });
+      // processRecords 统一排序，避免首次扫描结束后立即再读一轮布局。
     }
     recount();
     if (!records.length) {

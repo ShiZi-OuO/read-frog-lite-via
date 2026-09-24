@@ -314,6 +314,22 @@ async function invokeMenu(page, label) {
   await page.evaluate((name) => window.__menus[name](), label);
 }
 
+// 启动翻译时先显示加载态；用户若立刻停止，尚未开始的扫描不能再发请求。
+{
+  const page = await createPage({ config:baseConfig() });
+  const beforeScan = await page.evaluate(() => {
+    window.__menus["翻译当前网页"]();
+    const frog = document.querySelector("#rf-via-host").shadowRoot.querySelector("#frog");
+    const state = { busy:frog.classList.contains("busy"), requests:window.__requestCount };
+    window.__menus["停止翻译"]();
+    return state;
+  });
+  assert.deepEqual(beforeScan, { busy:true, requests:0 });
+  await page.waitForTimeout(120);
+  assert.equal(await page.evaluate(() => window.__requestCount), 0);
+  await page.close();
+}
+
 // 迁移 v1 配置时保留用户的 DeepSeek Key，并解析出正确请求地址。
 {
   const page = await createPage({ themeColor:"#3f51b5", oldConfig: { provider:"openai", endpoint:"https://api.deepseek.com", apiKey:"secret-key", model:"deepseek-v4-flash", targetLanguage:"简体中文", mode:"bilingual", batchSize:5, concurrency:2 } });
