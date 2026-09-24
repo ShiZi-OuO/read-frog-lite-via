@@ -41,6 +41,26 @@
   host.id = "rf-via-host";
   host.style.cssText = "display:block!important;visibility:visible!important;position:fixed!important;left:0!important;top:0!important;width:0!important;height:0!important;margin:0!important;padding:0!important;border:0!important;z-index:2147483647!important;pointer-events:none!important;";
   var root = host.attachShadow ? host.attachShadow({ mode:"open" }) : host;
+  // 严格 CSP 会拦截通过 <style> 注入的 CSS；构造样式表可保持 Shadow DOM 和译文样式正常。
+  function adoptStyle(target, css, replace) {
+    if (typeof CSSStyleSheet !== "function" || !CSSStyleSheet.prototype.replaceSync || !("adoptedStyleSheets" in target)) return false;
+    try {
+      var sheet = new CSSStyleSheet();
+      sheet.replaceSync(css);
+      target.adoptedStyleSheets = (replace ? [] : Array.prototype.slice.call(target.adoptedStyleSheets)).concat(sheet);
+      return true;
+    } catch (_) { return false; }
+  }
+  function mountIsolatedMarkup(markup) {
+    var match = /<style>([\s\S]*?)<\/style>/.exec(markup);
+    root.innerHTML = match ? markup.replace(match[0], "") : markup;
+    if (!match) return;
+    if (adoptStyle(root, match[1], true)) return;
+    // 较旧 WebView 仍沿用原来的 <style> 路径。
+    var style = document.createElement("style");
+    style.textContent = match[1];
+    root.insertBefore(style, root.firstChild);
+  }
   var readyObserver = null;
   var bodyReadyHandler = null;
   var booted = false;
@@ -60,7 +80,7 @@
     document.removeEventListener("readystatechange", bootWhenReady);
     ensureHost();
     startupStage("shell");
-    root.innerHTML = `
+    mountIsolatedMarkup(`
       <style>
         :host{all:initial;position:fixed!important;left:0!important;top:0!important;width:0!important;height:0!important;pointer-events:none!important}
         #frog-dock{position:fixed;right:0;top:72vh;width:70px;height:70px;pointer-events:none}
@@ -78,7 +98,7 @@
           <circle class="frog-eye" cx="21" cy="25" r="1.2"/><circle class="frog-eye" cx="27" cy="25" r="1.2"/>
           <path class="frog-smile" d="M15 29c2.6 4 6 5.5 9 5.5s6.4-1.5 9-5.5"/>
         </svg></span><span id="frog-loader" aria-hidden="true"></span><span id="frog-status" aria-hidden="true"></span>
-      </button></div>`;
+      </button></div>`);
     var shellFrog = root.querySelector("#frog");
     // 只观察 document、html 和 body 的直接子节点：既能处理根节点替换、宿主脱离和 body 到来，
     // 又不会在新闻流频繁改写正文时为每一处子节点变化付出额外扫描成本。
@@ -351,6 +371,7 @@
   // ---------------------------------------------------------------------------
 
   function addPageStyle(css) {
+    if (adoptStyle(document, css, false)) return;
     if (typeof GM_addStyle === "function") GM_addStyle(css);
     else {
       var style = document.createElement("style");
@@ -414,7 +435,7 @@
     warning:lineIcon('<path d="M12 6v7m0 4v.1"/>','status-icon')
   };
 
-  root.innerHTML = `
+  mountIsolatedMarkup(`
     <style>
       :host{all:initial;position:fixed!important;left:0!important;top:0!important;width:0!important;height:0!important;margin:0!important;padding:0!important;border:0!important;pointer-events:none!important;--primary:#4d6656;--on-primary:#fff;--primary-container:#d4eadb;--on-primary-container:#183326;--surface:#fafcf8;--surface-container:#eff3ed;--surface-high:#e7ede7;--outline:#c6d0c7;--ink:#1a211c;--muted:#59645d;--focus-ring:rgba(77,102,86,.15);--leaf:var(--primary);--leaf2:#70a989;font-family:system-ui,"Noto Sans SC","MiSans","Microsoft YaHei",sans-serif;color-scheme:light dark}
       *{box-sizing:border-box}button,input,select{font:inherit}.rf-ui{color:var(--ink);pointer-events:none}.rf-icon{display:block;width:20px;height:20px;flex:0 0 20px}.rf-icon path,.rf-icon rect,.rf-icon circle{vector-effect:non-scaling-stroke}#frog,#frog-actions,#settings{pointer-events:auto}
@@ -428,7 +449,7 @@
       #backdrop{position:fixed;z-index:2147483646;inset:0;background:rgba(22,29,24,.38);backdrop-filter:blur(3px);opacity:0;pointer-events:none;transition:opacity .24s ease}#backdrop.open{opacity:1;pointer-events:auto}
       #settings{position:fixed;z-index:2147483647;left:8px;right:8px;bottom:0;max-height:min(88vh,760px);overflow:auto;overscroll-behavior:contain;background:var(--surface);border:1px solid rgba(255,255,255,.7);border-radius:32px 32px 0 0;padding:10px 14px calc(20px + env(safe-area-inset-bottom));box-shadow:0 -20px 60px rgba(20,35,26,.22);transform:translateY(105%);transition:transform .38s cubic-bezier(.2,.8,.2,1)}#settings.open{transform:translateY(0)}
       .grab{width:34px;height:4px;border-radius:99px;background:var(--outline);margin:2px auto 12px}.head{display:flex;justify-content:space-between;align-items:center;min-height:72px;padding:4px 4px 8px 8px}.head-copy{min-width:0}.title{font-size:21px;font-weight:780;letter-spacing:-.025em}.sub{font-size:12px;color:var(--muted);margin-top:3px}.hero-art{position:relative;width:82px;height:58px;flex:0 0 82px;margin-left:auto;margin-right:8px;overflow:hidden;border-radius:22px;background:linear-gradient(155deg,var(--primary-container),var(--surface-high))}.hero-sun{position:absolute;width:17px;height:17px;border-radius:50%;right:12px;top:9px;background:#f3c982}.hero-hill{position:absolute;width:78px;height:42px;border-radius:50%;left:-18px;bottom:-23px;background:var(--leaf2);opacity:.6}.hero-pond{position:absolute;width:48px;height:19px;border-radius:50%;right:-8px;bottom:3px;background:rgba(115,169,183,.48)}.hero-frog{position:absolute;left:29px;bottom:10px;width:25px;height:21px;border-radius:48% 48% 44% 44%;background:var(--primary)}.hero-frog:before,.hero-frog:after{content:"";position:absolute;top:-5px;width:9px;height:9px;border-radius:50%;background:var(--primary)}.hero-frog:before{left:2px}.hero-frog:after{right:2px}.icon-btn{border:0;background:var(--surface-container);border-radius:50%;width:42px;height:42px;color:var(--ink);display:flex;align-items:center;justify-content:center}.icon-btn .rf-icon{width:21px;height:21px}
-      .section{margin-top:12px;padding:16px;background:var(--surface-container);border-radius:26px}.section:first-of-type{margin-top:4px}.section-title{font-size:13px;font-weight:780;color:var(--primary);letter-spacing:.025em;margin-bottom:10px}label{display:block;font-size:12px;font-weight:680;color:var(--muted);margin:12px 2px 6px}input,select{width:100%;min-height:50px;border:1px solid transparent;border-radius:18px;background:var(--surface);color:var(--ink);padding:10px 14px;font-size:15px;outline:none;transition:border-color .18s ease,box-shadow .18s ease,background .18s ease}input:focus,select:focus{border-color:var(--primary);background:var(--surface);box-shadow:0 0 0 4px var(--focus-ring)}.grid{display:grid;grid-template-columns:1fr 1fr;gap:10px}.site-auto{display:flex;align-items:center;gap:12px;margin:14px 0 0;padding:12px 14px;background:var(--surface);border-radius:20px;cursor:pointer}.site-auto-copy{flex:1;min-width:0}.site-auto-title{font-size:14px;font-weight:760;color:var(--ink)}.site-auto-host{margin-top:3px;font-size:11px;font-weight:560;color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.site-auto input{position:absolute;opacity:0;width:1px;min-height:1px;padding:0}.site-auto-switch{position:relative;width:48px;height:28px;flex:0 0 48px;border-radius:999px;background:var(--outline);transition:background .2s ease}.site-auto-switch:after{content:"";position:absolute;left:4px;top:4px;width:20px;height:20px;border-radius:50%;background:var(--surface);box-shadow:0 2px 5px rgba(20,35,26,.22);transition:transform .24s cubic-bezier(.2,.8,.2,1),background .2s ease}.site-auto input:checked+.site-auto-switch{background:var(--primary)}.site-auto input:checked+.site-auto-switch:after{transform:translateX(20px);background:var(--on-primary)}.site-auto input:focus-visible+.site-auto-switch{box-shadow:0 0 0 4px var(--focus-ring)}.key-row{display:flex;gap:8px}.key-row input{flex:1;min-width:0}.key-row button{width:48px;flex:0 0 48px;border:0;border-radius:17px;background:var(--surface-high);color:var(--ink);display:flex;align-items:center;justify-content:center}.key-row button .rf-icon{width:19px;height:19px}.preview{font-size:11px;color:var(--muted);word-break:break-all;margin:8px 2px 0}.hint{font-size:12px;color:var(--muted);line-height:1.6;margin-top:10px}.settings-actions{display:grid;grid-template-columns:1.2fr 1fr;gap:10px;margin:14px 2px 2px}.settings-actions button{min-height:50px;border:0;border-radius:999px;font-weight:760;letter-spacing:.02em}.save{background:var(--primary);color:var(--on-primary);box-shadow:0 8px 20px rgba(28,68,44,.18)}.test{background:var(--primary-container);color:var(--on-primary-container)}#settings-status{font-size:12px;min-height:18px;margin:10px 4px 0;color:var(--muted)}
+      .section{margin-top:12px;padding:16px;background:var(--surface-container);border-radius:26px}.section:first-of-type{margin-top:4px}.section-title{font-size:13px;font-weight:780;color:var(--primary);letter-spacing:.025em;margin-bottom:10px}label{display:block;font-size:12px;font-weight:680;color:var(--muted);margin:12px 2px 6px}input,select{width:100%;min-height:50px;border:1px solid transparent;border-radius:18px;background:var(--surface);color:var(--ink);padding:10px 14px;font-size:15px;outline:none;transition:border-color .18s ease,box-shadow .18s ease,background .18s ease}input:focus,select:focus{border-color:var(--primary);background:var(--surface);box-shadow:0 0 0 4px var(--focus-ring)}#custom-language{display:none;margin-top:7px}.grid{display:grid;grid-template-columns:1fr 1fr;gap:10px}.site-auto{display:flex;align-items:center;gap:12px;margin:14px 0 0;padding:12px 14px;background:var(--surface);border-radius:20px;cursor:pointer}.site-auto-copy{flex:1;min-width:0}.site-auto-title{font-size:14px;font-weight:760;color:var(--ink)}.site-auto-host{margin-top:3px;font-size:11px;font-weight:560;color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.site-auto input{position:absolute;opacity:0;width:1px;min-height:1px;padding:0}.site-auto-switch{position:relative;width:48px;height:28px;flex:0 0 48px;border-radius:999px;background:var(--outline);transition:background .2s ease}.site-auto-switch:after{content:"";position:absolute;left:4px;top:4px;width:20px;height:20px;border-radius:50%;background:var(--surface);box-shadow:0 2px 5px rgba(20,35,26,.22);transition:transform .24s cubic-bezier(.2,.8,.2,1),background .2s ease}.site-auto input:checked+.site-auto-switch{background:var(--primary)}.site-auto input:checked+.site-auto-switch:after{transform:translateX(20px);background:var(--on-primary)}.site-auto input:focus-visible+.site-auto-switch{box-shadow:0 0 0 4px var(--focus-ring)}.key-row{display:flex;gap:8px}.key-row input{flex:1;min-width:0}.key-row button{width:48px;flex:0 0 48px;border:0;border-radius:17px;background:var(--surface-high);color:var(--ink);display:flex;align-items:center;justify-content:center}.key-row button .rf-icon{width:19px;height:19px}.preview{font-size:11px;color:var(--muted);word-break:break-all;margin:8px 2px 0}.hint{font-size:12px;color:var(--muted);line-height:1.6;margin-top:10px}.settings-actions{display:grid;grid-template-columns:1.2fr 1fr;gap:10px;margin:14px 2px 2px}.settings-actions button{min-height:50px;border:0;border-radius:999px;font-weight:760;letter-spacing:.02em}.save{background:var(--primary);color:var(--on-primary);box-shadow:0 8px 20px rgba(28,68,44,.18)}.test{background:var(--primary-container);color:var(--on-primary-container)}#settings-status{font-size:12px;min-height:18px;margin:10px 4px 0;color:var(--muted)}
       @media(prefers-color-scheme:dark){#frog-actions{background:rgba(29,34,30,.95);border-color:rgba(255,255,255,.08)}.action-icon{background:rgba(255,255,255,.1)}#settings{border-color:rgba(255,255,255,.08)}input,select{border-color:transparent}}
       @media(prefers-reduced-motion:reduce){*{transition:none!important}#frog-loader:after{animation:none!important}}
     </style>
@@ -438,7 +459,7 @@
       <section id="settings" aria-label="Read Frog 设置">
         <div class="grab"></div><div class="head"><div class="head-copy"><div class="title">Read Frog Lite</div><div class="sub">安静、轻盈地阅读 · ${VERSION}</div></div><div class="hero-art" aria-hidden="true"><span class="hero-sun"></span><span class="hero-hill"></span><span class="hero-pond"></span><span class="hero-frog"></span></div><button id="settings-close" class="icon-btn" aria-label="关闭设置">${UI_ICONS.close}</button></div>
         <div class="section"><div class="section-title">阅读偏好</div>
-          <label for="language">目标语言</label><select id="language">${languageOptions}</select><input id="custom-language" placeholder="语言名或代码，例如 nl" style="display:none;margin-top:7px">
+          <label for="language">目标语言</label><select id="language">${languageOptions}</select><input id="custom-language" placeholder="语言名或代码，例如 nl">
           <div class="grid"><div><label for="mode">显示模式</label><select id="mode"><option value="bilingual">双语对照</option><option value="translation">直接替换原文</option></select></div><div><label for="translation-style">双语译文样式</label><select id="translation-style"><option value="annotation">细线标记</option><option value="minimal">无样式</option></select></div></div>
           <label class="site-auto" for="auto-site"><span class="site-auto-copy"><span class="site-auto-title">总是自动翻译此网站</span><span id="auto-site-host" class="site-auto-host"></span></span><input id="auto-site" type="checkbox"><span class="site-auto-switch" aria-hidden="true"></span></label>
         </div>
@@ -452,7 +473,7 @@
         <div class="section"><div class="section-title">性能</div><div class="grid"><div><label for="batch">每批段落</label><input id="batch" type="number" min="1" max="10"></div><div><label for="concurrency">并发请求</label><input id="concurrency" type="number" min="1" max="4"></div></div></div>
         <div class="settings-actions"><button id="save" class="save">保存设置</button><button id="test" class="test">测试服务</button></div><div id="settings-status"></div>
       </section>
-    </div>`;
+    </div>`);
   // 完整界面接管最早显示的同一个按钮，避免重新绘制时出现两个青蛙或闪白。
   var fullFrog = root.querySelector("#frog");
   fullFrog.parentNode.replaceChild(shellFrog, fullFrog);

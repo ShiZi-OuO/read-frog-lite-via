@@ -314,6 +314,53 @@ async function invokeMenu(page, label) {
   await page.evaluate((name) => window.__menus[name](), label);
 }
 
+// 严格 style-src 会拦截普通 <style>，但悬浮球、设置面板和译文仍须保持排版。
+{
+  const page = await browser.newPage({ viewport:{ width:390, height:844 }, isMobile:true, hasTouch:true });
+  const url = "https://strict-style.example.test/";
+  await page.route(url, (route) => route.fulfill({
+    status:200, contentType:"text/html",
+    headers:{ "Content-Security-Policy":"default-src 'self'; style-src 'self'; script-src 'self'" },
+    body:"<!doctype html><html><head><title>Strict CSP</title></head><body><main><p>Readable article text.</p></main></body></html>",
+  }));
+  await page.addInitScript({ content:`
+    window.__menus = {};
+    window.GM_getValue = (key, fallback) => fallback;
+    window.GM_setValue = () => {};
+    window.GM_addStyle = (css) => { const style=document.createElement("style"); style.textContent=css; (document.head || document.documentElement).appendChild(style); };
+    window.GM_registerMenuCommand = (label, handler) => { window.__menus[label]=handler; };
+    window.GM_xmlhttpRequest = () => ({ abort() {} });
+  ` + script });
+  await page.goto(url, { waitUntil:"domcontentloaded" });
+  await page.waitForFunction(() => document.querySelector("#rf-via-host")?.getAttribute("data-rf-startup") === "ready");
+  const styles = await page.evaluate(() => {
+    const root = document.querySelector("#rf-via-host").shadowRoot;
+    const translation = document.createElement("span");
+    translation.className = "rf-via-translation";
+    translation.dataset.rfStyle = "annotation";
+    translation.textContent = "译文";
+    document.body.appendChild(translation);
+    const result = {
+      frogWidth:getComputedStyle(root.querySelector("#frog")).width,
+      actionsWidth:getComputedStyle(root.querySelector("#frog-actions")).width,
+      settingsPosition:getComputedStyle(root.querySelector("#settings")).position,
+      translationBorder:getComputedStyle(translation).borderLeftWidth,
+    };
+    translation.remove();
+    window.__menus["打开 Read Frog 设置"]();
+    result.settingsWidth = root.querySelector("#settings").getBoundingClientRect().width;
+    result.customLanguageDisplay = getComputedStyle(root.querySelector("#custom-language")).display;
+    return result;
+  });
+  assert.equal(styles.frogWidth, "50px");
+  assert.equal(styles.actionsWidth, "206px");
+  assert.equal(styles.settingsPosition, "fixed");
+  assert.equal(styles.translationBorder, "2px");
+  assert.ok(styles.settingsWidth >= 350);
+  assert.equal(styles.customLanguageDisplay, "none");
+  await page.close();
+}
+
 // 启动翻译时先显示加载态；用户若立刻停止，尚未开始的扫描不能再发请求。
 {
   const page = await createPage({ config:baseConfig() });
